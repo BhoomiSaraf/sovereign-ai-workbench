@@ -11,7 +11,7 @@ class ChromaStore:
 
     def __init__(
         self,
-        persist_directory: str = "data/chroma",
+        persist_directory: str = "data/vector_db",
         collection_name: str = "knowledge",
     ):
         self.persist_directory = Path(
