@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+logs/
+*.log
+
+# Local uploaded/processed data
+data/uploads/
+data/processed/
+data/executions/
+
+# Local vector databases
+data/chroma/
+data/vectorstore/
+chroma_db/
+
+# Generated artifacts
+workspace/artifacts/
+app/artifacts/generated/
+
+# Temporary files
+tmp/
+temp/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local model files
+*.gguf
+*.safetensors
+*.bin
+
+# Python build
+build/
+dist/
+*.egg-info/
