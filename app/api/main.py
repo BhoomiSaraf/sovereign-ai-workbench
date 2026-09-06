@@ -4,6 +4,8 @@ from app.api.files import router as files_router
 from app.api.knowledge import (
     router as knowledge_router,
 )
+from app.api.tasks import router as tasks_router
+from app.api.chat import router as chat_router
 
 
 app = FastAPI(
@@ -22,6 +24,14 @@ app.include_router(
 
 app.include_router(
     knowledge_router
+)
+
+app.include_router(
+    tasks_router
+)
+
+app.include_router(
+    chat_router
 )
 
 

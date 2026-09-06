@@ -30,11 +30,16 @@ class OCRTool:
             )
 
         else:
-            # Use the normal Tesseract executable
-            # discovered through the system PATH.
-            pytesseract.pytesseract.tesseract_cmd = (
-                "tesseract"
-            )
+            # Check common Windows path as a fallback
+            windows_path = Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
+            if windows_path.exists():
+                pytesseract.pytesseract.tesseract_cmd = str(windows_path)
+            else:
+                # Use the normal Tesseract executable
+                # discovered through the system PATH.
+                pytesseract.pytesseract.tesseract_cmd = (
+                    "tesseract"
+                )
 
         self._verify_tesseract()
 
