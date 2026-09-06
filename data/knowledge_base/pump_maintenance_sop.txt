@@ -1,0 +1,82 @@
+PUMP MAINTENANCE AND INSPECTION PROCEDURE
+
+Document ID: SOP-MECH-PUMP-001
+Revision: 03
+Department: Mechanical Maintenance
+Classification: Internal
+
+1. PURPOSE
+
+This procedure defines the inspection and maintenance requirements
+for centrifugal process pumps used in industrial service.
+
+2. BASE PLATE AND FOUNDATION INSPECTION
+
+During routine inspection, the pump base plate and foundation shall
+be examined for corrosion, cracking, loose fasteners, deterioration,
+or other visible abnormalities.
+
+Minor surface corrosion shall be cleaned and assessed to determine
+whether the affected area is superficial or requires further
+engineering evaluation.
+
+Significant corrosion, section loss, cracking, or deterioration
+affecting structural integrity shall be reported to the responsible
+maintenance or reliability engineer before further operation or
+maintenance work is authorized.
+
+3. MECHANICAL SEAL INSPECTION
+
+The mechanical seal area shall be checked for visible leakage,
+moisture, abnormal deposits, or other indications of seal
+degradation.
+
+Persistent leakage or evidence of seal failure shall be referred
+to Mechanical Maintenance for detailed inspection and corrective
+action.
+
+4. COUPLING AND GUARD
+
+The coupling guard shall be installed, secure, and free from
+damage.
+
+Equipment shall not be operated with a missing or materially
+damaged coupling guard unless an approved maintenance procedure
+specifically permits the condition.
+
+5. INSTRUMENTATION
+
+Pressure and temperature indicators associated with the pump shall
+be checked for physical condition and valid calibration status.
+
+Where calibration status cannot be established, the instrument
+record shall be verified before relying on the measurement for
+engineering decisions.
+
+6. PRESSURE SAFETY DEVICES
+
+Pressure safety valves associated with the pumping system shall
+have valid inspection, testing, and certification records.
+
+The installed set pressure shall be verified against the approved
+design documentation.
+
+Relief discharge routing shall not be altered without appropriate
+engineering approval.
+
+7. INSPECTION RECORDS
+
+Inspection findings shall identify the equipment tag, observed
+condition, evidence available, recommended action, and any
+uncertainty requiring field verification.
+
+Safety-critical conclusions shall not be based solely on visual
+inspection or automated document analysis.
+
+8. ESCALATION
+
+Conditions that may affect equipment integrity, personnel safety,
+pressure containment, or reliable operation shall be escalated to
+the responsible engineering or reliability function.
+
+END OF PROCEDURE

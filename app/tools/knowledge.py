@@ -1,41 +1,53 @@
-from fastapi import APIRouter, Query
+from typing import Any, Dict, List
 
 from app.rag.retriever import KnowledgeRetriever
 
 
-router = APIRouter(
-    prefix="/knowledge",
-    tags=["knowledge"],
-)
-
-
-@router.get("/search")
-def search_knowledge(
-    query: str = Query(
-        ...,
-        min_length=1,
-    ),
-    top_k: int = Query(
-        5,
-        ge=1,
-        le=20,
-    ),
-):
+class KnowledgeTool:
     """
-    Search the local organizational knowledge base.
+    Agent-facing tool for searching the private
+    organizational knowledge base.
     """
 
-    retriever = KnowledgeRetriever()
+    name = "knowledge_search"
 
-    results = retriever.search(
-        query=query,
-        top_k=top_k,
-    )
+    def __init__(
+        self,
+        retriever: KnowledgeRetriever | None = None,
+    ):
+        self.retriever = (
+            retriever
+            or KnowledgeRetriever()
+        )
 
-    return {
-        "query": query,
-        "count": len(results),
-        "results": [
+    def execute(
+        self,
+        query: str,
+        top_k: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """
+        Search the local organizational knowledge base.
+
+        Returns serializable dictionaries suitable for
+        AgentState and API responses.
+        """
+
+        if not query or not query.strip():
+            raise ValueError(
+                "Knowledge search query cannot be empty."
+            )
+
+        if top_k <= 0:
+            raise ValueError(
+                "top_k must be greater than 0."
+            )
+
+        results = self.retriever.search(
+            query=query,
+            top_k=top_k,
+        )
+
+        return [
             {
                 "text": result.text,
                 "source": result.source,
@@ -43,5 +55,4 @@ def search_knowledge(
                 "metadata": result.metadata,
             }
             for result in results
-        ],
-    }
+        ]

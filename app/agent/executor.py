@@ -1,25 +1,13 @@
 from app.agent.state import AgentState
+from app.agent.tool_selector import ToolSelector
 from app.models.manager import ModelManager
+from app.multimodal.page_selector import SemanticPageSelector
+from app.router.model_registry import get_model_by_name
 from app.router.model_router import ModelRouter
 from app.tools.registry import ToolRegistry
-from app.tools.vision import VisionTool
-
-
 
 
 class AgentExecutor:
-    """
-    Executes an AgentPlan.
-
-    Responsibilities:
-        - route models
-        - execute approved tools
-        - execute multimodal vision analysis
-        - retrieve private knowledge
-        - construct model context
-        - generate the final response
-        - record execution events
-    """
 
     def __init__(
         self,
@@ -30,6 +18,17 @@ class AgentExecutor:
         self.router = router
         self.model_manager = model_manager
         self.tool_registry = tool_registry
+        self.tool_selector = ToolSelector()
+
+        # Local semantic relevance selector.
+        #
+        # It uses the local embedding model and does not contain
+        # task-specific keywords.
+        self.page_selector = SemanticPageSelector()
+
+    # ==========================================================
+    # MAIN EXECUTION
+    # ==========================================================
 
     def execute(
         self,
@@ -37,63 +36,91 @@ class AgentExecutor:
     ) -> AgentState:
 
         try:
-            # --------------------------------------------------
-            # Route
-            # --------------------------------------------------
-
+            # 1. Route task
             self._execute_routing(state)
 
-            # --------------------------------------------------
-            # Vision
-            # --------------------------------------------------
+            # 2. Select tools
+            self._select_tools(state)
 
+            # 3. Document processing
+            if self._should_process_document(state):
+                self._execute_document_processing(state)
+
+            # 4. Vision
             if self._should_analyze_image(state):
                 self._execute_vision(state)
 
-            # --------------------------------------------------
-            # Knowledge
-            # --------------------------------------------------
-
+            # 5. Knowledge / RAG
             if self._should_search_knowledge(state):
                 self._execute_knowledge_search(state)
 
-            # --------------------------------------------------
-            # Calculator
-            # --------------------------------------------------
-
+            # 6. Calculator
             if self._should_calculate(state):
                 self._execute_calculator(state)
 
-                # A pure calculation is a terminal tool call.
-                # Do not send a verified calculation through
-                # the language model again.
                 if self._is_calculation_only(state):
                     state.response = str(
                         state.tool_results["calculator"]
                     )
 
+                    state.evidence.setdefault(
+                        "inference",
+                        [],
+                    ).append(
+                        {
+                            "conclusion": state.response,
+                            "supporting_evidence": {
+                                "document": len(
+                                    state.evidence.get(
+                                        "document",
+                                        [],
+                                    )
+                                ),
+                                "vision": len(
+                                    state.evidence.get(
+                                        "vision",
+                                        [],
+                                    )
+                                ),
+                                "knowledge": len(
+                                    state.evidence.get(
+                                        "knowledge",
+                                        [],
+                                    )
+                                ),
+                            },
+                        }
+                    )
+
                     state.completed = True
 
                     state.add_event(
+                        "execution",
                         "complete",
-                        "success",
                         terminal_tool="calculator",
                     )
 
                     return state
 
-            # --------------------------------------------------
-            # Final generation
-            # --------------------------------------------------
+            # 7. Python sandbox
+            if self._should_execute_python(state):
+                self._execute_python(state)
 
+            # 8. Generate response
             self._generate_response(state)
+
+            # 9. Generate requested artifact
+            if self._should_generate_artifact(state):
+                self._execute_artifact(state)
 
             state.completed = True
 
             state.add_event(
+                "execution",
                 "complete",
-                "success",
             )
+
+            return state
 
         except Exception as exc:
 
@@ -106,7 +133,7 @@ class AgentExecutor:
                 error=str(exc),
             )
 
-        return state
+            return state
 
     # ==========================================================
     # ROUTING
@@ -115,34 +142,165 @@ class AgentExecutor:
     def _execute_routing(
         self,
         state: AgentState,
-    ) -> None:
-
-        state.add_event(
-            "route_model",
-            "started",
-        )
-
+    ):
         decision = self.router.route(
-            task=state.user_input,
+            state.user_input,
             has_image=state.has_image,
         )
 
         state.selected_model = decision.model.name
-
         state.routing_score = decision.score
-
         state.routing_reason = decision.reason
 
-        state.task_requirements = (
+        # The planner owns execution requirements.
+        #
+        # Router requirements are useful for model-routing
+        # information, but must not overwrite planner decisions
+        # such as RAG, vision, document, or artifact requirements.
+        state.metadata["routing_task_requirements"] = (
             decision.task_requirements
         )
 
         state.add_event(
-            "route_model",
-            "success",
+            "routing",
+            "complete",
             model=decision.model.name,
             score=decision.score,
             reason=decision.reason,
+        )
+
+    # ==========================================================
+    # TOOL SELECTION
+    # ==========================================================
+
+    def _select_tools(
+        self,
+        state: AgentState,
+    ):
+
+        selection = self.tool_selector.select(
+            state
+        )
+
+        state.metadata["selected_tools"] = (
+            selection.tools
+        )
+
+        state.metadata[
+            "tool_selection_reasons"
+        ] = selection.reasons
+
+        state.add_event(
+            "tool_selection",
+            "complete",
+            tools=selection.tools,
+            reasons=selection.reasons,
+        )
+
+    def _has_selected_tool(
+        self,
+        state: AgentState,
+        tool_name: str,
+    ) -> bool:
+
+        return tool_name in state.metadata.get(
+            "selected_tools",
+            [],
+        )
+
+    # ==========================================================
+    # DOCUMENTS
+    # ==========================================================
+
+    def _should_process_document(
+        self,
+        state: AgentState,
+    ) -> bool:
+
+        return (
+            self._has_selected_tool(
+                state,
+                "documents",
+            )
+            and bool(
+                state.metadata.get(
+                    "file_path"
+                )
+                or state.metadata.get(
+                    "document_path"
+                )
+            )
+        )
+
+    def _execute_document_processing(
+        self,
+        state: AgentState,
+    ):
+
+        if not self.tool_registry.has_tool(
+            "documents"
+        ):
+            raise RuntimeError(
+                "Document tool is not registered."
+            )
+
+        file_path = (
+            state.metadata.get(
+                "file_path"
+            )
+            or state.metadata.get(
+                "document_path"
+            )
+        )
+
+        result = self.tool_registry.execute(
+            "documents",
+            file_path=file_path,
+        )
+
+        state.tool_results["documents"] = result
+        state.metadata["document_result"] = result
+
+        # Structured evidence.
+        state.evidence.setdefault(
+            "document",
+            [],
+        ).append(
+            {
+                "claim": (
+                    "Document was successfully "
+                    "processed by the local "
+                    "document pipeline."
+                ),
+                "source": result.get(
+                    "source"
+                ),
+                "page_count": result.get(
+                    "page_count"
+                ),
+                "ocr_used": result.get(
+                    "ocr_used"
+                ),
+                "confidence": 1.0,
+            }
+        )
+
+        state.add_event(
+            "tool",
+            "complete",
+            tool="documents",
+            ocr_used=result.get(
+                "ocr_used"
+            ),
+            page_count=result.get(
+                "page_count"
+            ),
+            rendered_pages=len(
+                result.get(
+                    "rendered_pages",
+                    [],
+                )
+            ),
         )
 
     # ==========================================================
@@ -154,15 +312,106 @@ class AgentExecutor:
         state: AgentState,
     ) -> bool:
 
-        return (
+        if not self._has_selected_tool(
+            state,
+            "vision",
+        ):
+            return False
+
+        # Direct image input.
+        if (
             state.has_image
-            and bool(state.image_path)
+            and state.image_path
+        ):
+            return True
+
+        # Scanned PDF with rendered pages.
+        document_result = (
+            state.tool_results.get(
+                "documents"
+            )
+        )
+
+        if isinstance(
+            document_result,
+            dict,
+        ):
+
+            return bool(
+                document_result.get(
+                    "ocr_used",
+                    False,
+                )
+                and document_result.get(
+                    "rendered_pages",
+                    [],
+                )
+            )
+
+        return False
+
+    def _select_vision_pages(
+        self,
+        state: AgentState,
+        top_k: int = 1,
+    ):
+        """
+        Select relevant rendered document pages using local
+        semantic similarity.
+
+        No document-specific keywords are used.
+        """
+
+        document_result = (
+            state.tool_results.get(
+                "documents"
+            )
+        )
+
+        if not isinstance(
+            document_result,
+            dict,
+        ):
+            return []
+
+        rendered_pages = (
+            document_result.get(
+                "rendered_pages",
+                [],
+            )
+        )
+
+        page_texts = (
+            document_result.get(
+                "page_texts",
+                [],
+            )
+        )
+
+        if not rendered_pages:
+            return []
+
+        # Fail loudly instead of silently pairing the wrong
+        # OCR text with the wrong image.
+        if len(rendered_pages) != len(
+            page_texts
+        ):
+            raise ValueError(
+                "Rendered pages and OCR page texts "
+                "are misaligned."
+            )
+
+        return self.page_selector.select(
+            query=state.user_input,
+            pages=rendered_pages,
+            page_texts=page_texts,
+            top_k=top_k,
         )
 
     def _execute_vision(
         self,
         state: AgentState,
-    ) -> None:
+    ):
 
         if not self.tool_registry.has_tool(
             "vision"
@@ -171,46 +420,236 @@ class AgentExecutor:
                 "Vision tool is not registered."
             )
 
+        # ------------------------------------------------------
+        # Determine image(s)
+        # ------------------------------------------------------
+
+        pages = []
+
+        # Direct image input.
+        if (
+            state.has_image
+            and state.image_path
+        ):
+
+            pages = [
+                {
+                    "page_number": None,
+                    "image_path": state.image_path,
+                    "relevance_score": 1.0,
+                }
+            ]
+
+        # Document-derived images.
+        else:
+
+            selected = self._select_vision_pages(
+                state,
+                top_k=1,
+            )
+
+            pages = [
+                {
+                    "page_number": page.page_number,
+                    "image_path": page.image_path,
+                    "relevance_score": page.score,
+                }
+                for page in selected
+            ]
+
+        if not pages:
+            state.add_event(
+                "tool",
+                "skipped",
+                tool="vision",
+                reason=(
+                    "No usable image was available."
+                ),
+            )
+            return
+
+        # ------------------------------------------------------
+        # Analyze selected image(s)
+        # ------------------------------------------------------
+
+        outputs = []
+
+        for page in pages:
+
+            image_path = page[
+                "image_path"
+            ]
+
+            prompt = f"""
+        Analyze the supplied image in relation to the user's request.
+
+        USER REQUEST:
+        {state.user_input}
+
+        Treat the image as visual evidence only.
+
+        Return only observations that are directly supported by
+        the image.
+
+        Separate your response into:
+
+        1. Directly visible information.
+        2. Uncertain or ambiguous observations.
+
+        Do NOT invent:
+        - labels
+        - values
+        - measurements
+        - equipment states
+        - relationships
+        - operating conditions
+
+        Do NOT infer or claim:
+        - operational status
+        - safe or unsafe operation
+        - fitness for service
+        - compliance
+        - remaining life
+        - structural integrity
+        - active leakage
+        - failure
+        - maintenance completion
+
+        unless the supplied image explicitly provides evidence for
+        that claim.
+
+        If operational status is not directly established by the
+        image, state:
+
+        "Operational status cannot be determined from the image."
+
+        If leakage is not directly visible and unambiguous, describe
+        it as staining, discoloration, moisture, or a possible leakage
+        indicator rather than claiming that an active leak exists.
+
+        If a measurement is not clearly readable directly from the
+        image, do not invent or estimate it.
+
+        If text or a tag is difficult to read, explicitly mark it
+        as uncertain.
+
+        Do not treat information that is merely implied by the
+        equipment type, diagram, context, or domain knowledge as
+        direct visual evidence.
+
+        The image is not proof of actual physical operating
+        condition unless that condition is directly observable.
+
+        Return only observations supported by the image.
+        """
+
+
+            result = self.tool_registry.execute(
+                "vision",
+                image_path=image_path,
+                prompt=prompt,
+            )
+
+            outputs.append(
+                {
+                    "page_number": page[
+                        "page_number"
+                    ],
+                    "image_path": image_path,
+                    "relevance_score": page[
+                        "relevance_score"
+                    ],
+                    "analysis": result,
+                }
+            )
+
+        # ------------------------------------------------------
+        # Preserve existing state fields
+        # ------------------------------------------------------
+
+        state.vision_context = "\n\n".join(
+            str(item["analysis"])
+            for item in outputs
+        )
+
+        state.tool_results["vision"] = outputs
+
+        # Preserve current metadata behavior.
+        state.metadata["vision_pages"] = [
+            {
+                "page_number": item[
+                    "page_number"
+                ],
+                "image_path": item[
+                    "image_path"
+                ],
+                "relevance_score": item[
+                    "relevance_score"
+                ],
+            }
+            for item in outputs
+        ]
+
+        # Existing vision model metadata.
+        #
+        # This is metadata describing the current registered
+        # vision implementation, not a routing decision.
+        state.metadata["vision_model"] = (
+            "qwen2.5-vl-3b"
+        )
+
+        # ------------------------------------------------------
+        # Structured evidence
+        # ------------------------------------------------------
+
+        for item in outputs:
+
+            state.evidence.setdefault(
+                "vision",
+                [],
+            ).append(
+                {
+                    "observation": item[
+                        "analysis"
+                    ],
+                    "source": item[
+                        "image_path"
+                    ],
+                    "page": item[
+                        "page_number"
+                    ],
+                    "relevance": item[
+                        "relevance_score"
+                    ],
+                }
+            )
+
         state.add_event(
             "vision_analysis",
-            "started",
+            "complete",
+            model=state.metadata.get(
+                "vision_model"
+            ),
+            pages=len(outputs),
+            image_paths=[
+                item["image_path"]
+                for item in outputs
+            ],
+            summary=state.vision_context,
         )
-
-        prompt = (
-            "Analyze this industrial engineering image "
-            "carefully. Identify equipment, component "
-            "tags, valves, instruments, connections, "
-            "flow direction, safety devices, and any "
-            "clearly readable operating parameters. "
-            "Preserve tag numbers exactly as shown. "
-            "If a label is uncertain, explicitly mark "
-            "it as uncertain rather than guessing."
-        )
-
-        result = self.tool_registry.execute(
-            "vision",
-            image_path=state.image_path,
-            prompt=prompt,
-        )
-
-        state.vision_context = result
-
-        state.tool_results[
-            "vision"
-        ] = result
-
-        state.metadata[
-            "vision_model"
-        ] = "qwen2.5-vl-3b"
 
         state.add_event(
-            "vision_analysis",
-            "success",
-            model="qwen2.5-vl-3b",
+            "tool",
+            "complete",
+            tool="vision",
+            model=state.metadata.get(
+                "vision_model"
+            ),
+            pages=len(outputs),
         )
 
     # ==========================================================
-    # KNOWLEDGE
+    # RAG
     # ==========================================================
 
     def _should_search_knowledge(
@@ -218,18 +657,33 @@ class AgentExecutor:
         state: AgentState,
     ) -> bool:
 
+        if not self._has_selected_tool(
+            state,
+            "knowledge_search",
+        ):
+            return False
+
         requirements = state.task_requirements
 
-        return bool(
-            requirements
-            and requirements.rag_required
-        )
+        if isinstance(requirements, dict):
+            return bool(
+                requirements.get(
+                    "rag_required",
+                    False,
+                )
+            )
 
+        return bool(
+            getattr(
+                requirements,
+                "rag_required",
+                False,
+            )
+        )
     def _execute_knowledge_search(
         self,
         state: AgentState,
-    ) -> None:
-
+    ):
         if not self.tool_registry.has_tool(
             "knowledge_search"
         ):
@@ -237,29 +691,84 @@ class AgentExecutor:
                 "Knowledge search tool is not registered."
             )
 
-        state.add_event(
-            "search_knowledge",
-            "started",
-        )
-
-        results = self.tool_registry.execute(
+        result = self.tool_registry.execute(
             "knowledge_search",
             query=state.user_input,
             top_k=5,
         )
 
-        state.knowledge_context = results
+        # ------------------------------------------------------
+        # Keep retrieval context source-consistent when one
+        # source clearly dominates the retrieved results.
+        #
+        # This is generic: it is not tied to HX-204, pumps,
+        # or any specific SOP.
+        # ------------------------------------------------------
+
+        if result:
+            source_counts = {}
+
+            for item in result:
+                source = item.get("source")
+
+                if source:
+                    source_counts[source] = (
+                        source_counts.get(source, 0) + 1
+                    )
+
+            if source_counts:
+                dominant_source = max(
+                    source_counts,
+                    key=source_counts.get,
+                )
+
+                dominant_count = source_counts[
+                    dominant_source
+                ]
+
+                if dominant_count >= 3:
+                    result = [
+                        item
+                        for item in result
+                        if item.get("source")
+                        == dominant_source
+                    ]
+
+        state.knowledge_context = result
 
         state.tool_results[
             "knowledge_search"
-        ] = results
+        ] = result
+
+        # Structured private-knowledge evidence.
+        for item in result:
+            state.evidence.setdefault(
+                "knowledge",
+                [],
+            ).append(
+                {
+                    "statement": item.get(
+                        "text"
+                    ),
+                    "source": item.get(
+                        "source"
+                    ),
+                    "relevance": item.get(
+                        "score"
+                    ),
+                    "metadata": item.get(
+                        "metadata",
+                        {},
+                    ),
+                }
+            )
 
         state.add_event(
-            "search_knowledge",
-            "success",
-            result_count=len(results),
+            "tool",
+            "complete",
+            tool="knowledge_search",
+            results=len(result),
         )
-
     # ==========================================================
     # CALCULATOR
     # ==========================================================
@@ -269,58 +778,15 @@ class AgentExecutor:
         state: AgentState,
     ) -> bool:
 
-        text = state.user_input.lower()
-
-        keywords = [
-            "calculate",
-            "compute",
-            "what is",
-            "how much is",
-        ]
-
-        operators = [
-            "+",
-            "-",
-            "*",
-            "/",
-            "%",
-            "**",
-        ]
-
-        return (
-            any(
-                keyword in text
-                for keyword in keywords
-            )
-            and any(
-                operator in state.user_input
-                for operator in operators
-            )
-        )
-
-    def _is_calculation_only(
-        self,
-        state: AgentState,
-    ) -> bool:
-
-        text = state.user_input.lower().strip()
-
-        calculation_prefixes = [
-            "calculate",
-            "compute",
-            "what is",
-            "how much is",
-        ]
-
-        return any(
-            text.startswith(prefix)
-            for prefix in calculation_prefixes
+        return self._has_selected_tool(
+            state,
+            "calculator",
         )
 
     def _execute_calculator(
         self,
         state: AgentState,
-    ) -> None:
+    ):
 
         if not self.tool_registry.has_tool(
             "calculator"
@@ -328,11 +794,6 @@ class AgentExecutor:
             raise RuntimeError(
                 "Calculator tool is not registered."
             )
-
-        state.add_event(
-            "calculator",
-            "started",
-        )
 
         expression = self._extract_expression(
             state.user_input
@@ -347,8 +808,6 @@ class AgentExecutor:
             "calculator"
         ] = result
 
-        # Expose tool execution information to the UI,
-        # audit layer, and execution trace.
         state.metadata[
             "tool_used"
         ] = "calculator"
@@ -362,66 +821,327 @@ class AgentExecutor:
         ] = expression
 
         state.add_event(
-            "calculator",
-            "success",
+            "tool",
+            "complete",
+            tool="calculator",
             expression=expression,
             result=result,
         )
 
+    def _is_calculation_only(
+        self,
+        state: AgentState,
+    ) -> bool:
+
+        return (
+            self._has_selected_tool(
+                state,
+                "calculator",
+            )
+            and not self._has_selected_tool(
+                state,
+                "vision",
+            )
+            and not self._has_selected_tool(
+                state,
+                "knowledge_search",
+            )
+            and not self._has_selected_tool(
+                state,
+                "python",
+            )
+            and not self._has_selected_tool(
+                state,
+                "documents",
+            )
+        )
+
     # ==========================================================
-    # GENERATION
+    # PYTHON
+    # ==========================================================
+
+    def _should_execute_python(
+        self,
+        state: AgentState,
+    ) -> bool:
+
+        return self._has_selected_tool(
+            state,
+            "python",
+        )
+
+    def _execute_python(
+        self,
+        state: AgentState,
+    ):
+
+        if not self.tool_registry.has_tool(
+            "python"
+        ):
+            raise RuntimeError(
+                "Python tool is not registered."
+            )
+
+        code = state.metadata.get(
+            "code"
+        )
+
+        if not code:
+
+            state.add_event(
+                "tool",
+                "skipped",
+                tool="python",
+                reason="No code supplied.",
+            )
+
+            return
+
+        result = self.tool_registry.execute(
+            "python",
+            code=code,
+        )
+
+        state.tool_results[
+            "python"
+        ] = result
+
+        state.add_event(
+            "tool",
+            "complete",
+            tool="python",
+            success=result.get(
+                "success"
+            ),
+        )
+
+    # ==========================================================
+    # ARTIFACTS
+    # ==========================================================
+
+    def _should_generate_artifact(
+        self,
+        state: AgentState,
+    ) -> bool:
+
+        return self._has_selected_tool(
+            state,
+            "artifact",
+        )
+
+    def _execute_artifact(
+        self,
+        state: AgentState,
+    ):
+
+        if not self.tool_registry.has_tool(
+            "artifact"
+        ):
+            raise RuntimeError(
+                "Artifact tool is not registered."
+            )
+
+        source_document = (
+            state.metadata.get(
+                "file_path"
+            )
+            or state.metadata.get(
+                "document_path"
+            )
+        )
+
+        source_name = (
+            str(source_document)
+            if source_document
+            else "Local inspection workflow"
+        )
+
+        findings = []
+
+        # Prefer structured evidence where available.
+        for item in state.evidence.get(
+            "vision",
+            [],
+        ):
+            findings.append(
+                str(
+                    item.get(
+                        "observation",
+                        "",
+                    )
+                )
+            )
+
+        # Preserve document extraction behavior.
+        if "documents" in state.tool_results:
+
+            document_result = (
+                state.tool_results[
+                    "documents"
+                ]
+            )
+
+            if isinstance(
+                document_result,
+                dict,
+            ):
+
+                extracted_text = (
+                    document_result.get(
+                        "text"
+                    )
+                )
+
+                if extracted_text:
+
+                    findings.append(
+                        str(
+                            extracted_text
+                        )[:5000]
+                    )
+
+        recommendations = []
+
+        if state.response:
+            recommendations.append(
+                state.response
+            )
+
+        uncertainties = []
+
+        if state.vision_context:
+
+            uncertainties.append(
+                "Visual analysis is model-generated "
+                "and requires human verification "
+                "before approval."
+            )
+
+        if not state.knowledge_context:
+
+            uncertainties.append(
+                "No private organizational knowledge "
+                "was retrieved for this workflow."
+            )
+
+        result = self.tool_registry.execute(
+            "artifact",
+            artifact_type="docx",
+            title="Inspection Approval Note",
+            summary=(
+                state.response
+                or "Inspection workflow completed."
+            ),
+            findings=findings,
+            recommendations=recommendations,
+            knowledge_context=(
+                state.knowledge_context
+            ),
+            uncertainties=uncertainties,
+            source_document=source_name,
+            filename=(
+                "inspection_approval_note.docx"
+            ),
+        )
+
+        state.tool_results[
+            "artifact"
+        ] = result
+
+        state.metadata[
+            "artifact_path"
+        ] = result.get(
+            "path"
+        )
+
+        state.metadata[
+            "artifact_type"
+        ] = result.get(
+            "artifact_type"
+        )
+
+        state.metadata[
+            "artifact_validation"
+        ] = result.get(
+            "validation"
+        )
+
+        state.add_event(
+            "artifact_generation",
+            "complete",
+            artifact_type="docx",
+            path=result.get(
+                "path"
+            ),
+            validation=result.get(
+                "validation"
+            ),
+        )
+
+    # ==========================================================
+    # RESPONSE GENERATION
     # ==========================================================
 
     def _generate_response(
         self,
         state: AgentState,
-    ) -> None:
+    ):
 
-        if not state.selected_model:
-            raise RuntimeError(
-                "No model selected."
-            )
-
-        # Use the model selected during the routing step.
-        # Do not route the same task again.
-        model = next(
-            (
-                model
-                for model in self.router.models
-                if model.name == state.selected_model
-            ),
-            None,
+        # ModelRouter stores models as a list, so use the
+        # canonical registry lookup.
+        model = get_model_by_name(
+            state.selected_model
         )
 
-        if model is None:
-            raise RuntimeError(
-                f"Selected model '{state.selected_model}' "
-                "is not available."
-            )
+        prompt = self._build_prompt(
+            state
+        )
 
-        prompt = self._build_prompt(state)
+        state.response = (
+            self.model_manager.generate(
+                model=model,
+                prompt=prompt,
+            )
+        )
+
+        # Structured inference evidence.
+        state.evidence.setdefault(
+            "inference",
+            [],
+        ).append(
+            {
+                "conclusion": state.response,
+                "supporting_evidence": {
+                    "document": len(
+                        state.evidence.get(
+                            "document",
+                            [],
+                        )
+                    ),
+                    "vision": len(
+                        state.evidence.get(
+                            "vision",
+                            [],
+                        )
+                    ),
+                    "knowledge": len(
+                        state.evidence.get(
+                            "knowledge",
+                            [],
+                        )
+                    ),
+                },
+            }
+        )
 
         state.add_event(
-            "generate_response",
-            "started",
-            model=model.name,
-        )
-
-        response = self.model_manager.generate(
-            model=model,
-            prompt=prompt,
-        )
-
-        state.response = response
-
-        state.add_event(
-            "generate_response",
-            "success",
+            "generation",
+            "complete",
             model=model.name,
         )
 
     # ==========================================================
-    # PROMPT CONSTRUCTION
+    # PROMPT
     # ==========================================================
 
     def _build_prompt(
@@ -430,17 +1150,104 @@ class AgentExecutor:
     ) -> str:
 
         sections = [
-            "You are the local AI assistant "
-            "inside a sovereign, air-gapped "
-            "enterprise AI workbench.",
+            "You are operating inside a sovereign local AI "
+            "workbench.",
             "",
-            "User request:",
+            "USER REQUEST:",
             state.user_input,
+            "",
+            "EVIDENCE DISCIPLINE:",
+            "Information available to you is divided into "
+            "distinct evidence categories.",
+            "",
+            "DOCUMENT EVIDENCE:",
+            "Information extracted from the supplied document.",
+            "",
+            "VISION EVIDENCE:",
+            "Observations made from supplied images or rendered "
+            "document pages. Vision observations may be uncertain.",
+            "",
+            "PRIVATE KNOWLEDGE EVIDENCE:",
+            "Information retrieved from the private organizational "
+            "knowledge base. This is internal reference material "
+            "and must not be presented as direct observation of "
+            "the current equipment or document.",
+            "",
+            "INFERENCE:",
+            "Reasoning derived from the available evidence. "
+            "Clearly distinguish inference from directly observed "
+            "or documented facts.",
+            "",
+            "Do not convert an inference into a document fact.",
+            "Do not claim that physical equipment is healthy, "
+            "operating correctly, safe, compliant, or within "
+            "specification unless the supplied evidence actually "
+            "establishes that.",
+            "Do not convert an unresolved verification item into "
+            "a claim that equipment is unsafe, failed, non-compliant, "
+            "or incapable of operation unless the evidence explicitly "
+            "supports that conclusion.",
+            "When a source says verification is pending, describe "
+            "the status as unverified or pending verification.",
+            "If evidence is insufficient, explicitly state that "
+            "verification is required.",
         ]
 
-        # --------------------------------------------------
-        # Vision context
-        # --------------------------------------------------
+        # ------------------------------------------------------
+        # Structured evidence
+        # ------------------------------------------------------
+
+        if state.evidence.get(
+            "document"
+        ):
+
+            sections.extend(
+                [
+                    "",
+                    "STRUCTURED DOCUMENT EVIDENCE:",
+                    str(
+                        state.evidence[
+                            "document"
+                        ]
+                    ),
+                ]
+            )
+
+        if state.evidence.get(
+            "vision"
+        ):
+
+            sections.extend(
+                [
+                    "",
+                    "STRUCTURED VISION EVIDENCE:",
+                    str(
+                        state.evidence[
+                            "vision"
+                        ]
+                    ),
+                ]
+            )
+
+        if state.evidence.get(
+            "knowledge"
+        ):
+
+            sections.extend(
+                [
+                    "",
+                    "STRUCTURED PRIVATE KNOWLEDGE EVIDENCE:",
+                    str(
+                        state.evidence[
+                            "knowledge"
+                        ]
+                    ),
+                ]
+            )
+
+        # ------------------------------------------------------
+        # Existing tool context
+        # ------------------------------------------------------
 
         if state.vision_context:
 
@@ -448,63 +1255,39 @@ class AgentExecutor:
                 [
                     "",
                     "VISUAL ANALYSIS:",
-                    state.vision_context,
-                    "",
-                    "Use the visual analysis as evidence. "
-                    "Do not invent component tags or values. "
-                    "If the visual analysis marks something "
-                    "uncertain, preserve that uncertainty.",
+                    str(
+                        state.vision_context
+                    ),
                 ]
             )
-
-        # --------------------------------------------------
-        # Private knowledge
-        # --------------------------------------------------
 
         if state.knowledge_context:
 
             sections.extend(
                 [
                     "",
-                    "PRIVATE ORGANIZATIONAL "
-                    "KNOWLEDGE:",
+                    "PRIVATE ORGANIZATIONAL KNOWLEDGE:",
+                    str(
+                        state.knowledge_context
+                    ),
                 ]
             )
 
-            for index, item in enumerate(
-                state.knowledge_context,
-                start=1,
-            ):
-                sections.extend(
-                    [
-                        "",
-                        f"[Source {index}: "
-                        f"{item.get('source', 'unknown')}]",
-                        item.get(
-                            "text",
-                            "",
-                        ),
-                    ]
-                )
+        if "documents" in state.tool_results:
 
             sections.extend(
                 [
                     "",
-                    "Use the private knowledge "
-                    "when answering. Do not invent "
-                    "organizational policies or facts "
-                    "not supported by the retrieved "
-                    "material.",
+                    "DOCUMENT PROCESSING RESULT:",
+                    str(
+                        state.tool_results[
+                            "documents"
+                        ]
+                    ),
                 ]
             )
 
-        # --------------------------------------------------
-        # Calculator result
-        # --------------------------------------------------
-
-        if state.tool_results.get(
-            "calculator"
-        ) is not None:
+        if "calculator" in state.tool_results:
 
             sections.extend(
                 [
@@ -515,12 +1298,37 @@ class AgentExecutor:
                             "calculator"
                         ]
                     ),
-                    "",
-                    "Use this verified calculation "
-                    "result rather than recalculating "
-                    "it yourself.",
                 ]
             )
+
+        if "python" in state.tool_results:
+
+            sections.extend(
+                [
+                    "",
+                    "PYTHON EXECUTION RESULT:",
+                    str(
+                        state.tool_results[
+                            "python"
+                        ]
+                    ),
+                ]
+            )
+
+        sections.extend(
+            [
+                "",
+                "FINAL RESPONSE REQUIREMENTS:",
+                "Use provided evidence as the basis for your answer.",
+                "Do not invent missing information.",
+                "Distinguish documented facts from visual observations.",
+                "Distinguish organizational guidance from observations.",
+                "Clearly identify uncertainty.",
+                "Do not overstate conclusions.",
+                "When evidence is insufficient, state what must be "
+                "verified.",
+            ]
+        )
 
         return "\n".join(
             sections
@@ -535,7 +1343,7 @@ class AgentExecutor:
         text: str,
     ) -> str:
 
-        expression = text.lower()
+        expression = text.strip()
 
         prefixes = [
             "calculate",
@@ -544,18 +1352,20 @@ class AgentExecutor:
             "how much is",
         ]
 
+        lower = expression.lower()
+
         for prefix in prefixes:
 
-            if expression.startswith(prefix):
+            if lower.startswith(
+                prefix
+            ):
 
                 expression = expression[
                     len(prefix):
-                ]
+                ].strip()
 
                 break
 
-        return (
-            expression
-            .replace("?", "")
-            .strip()
-        )
+        return expression.rstrip(
+            "?"
+        ).strip()

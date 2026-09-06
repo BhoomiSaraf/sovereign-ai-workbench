@@ -1,0 +1,76 @@
+RIVERDALE PETROCHEM
+MECHANICAL INTEGRITY & MAINTENANCE PROCEDURE
+
+Document ID: MI-SOP-HX-204
+Title: Maintenance and Inspection Procedure for Shell-and-Tube Heat Exchangers
+Revision: 2
+Classification: CONTROLLED COPY — INTERNAL USE
+
+1. PURPOSE
+
+This procedure defines the required maintenance response for shell-and-tube heat exchangers when inspection identifies external corrosion, tube thinning, deposits, coating deterioration, or suspected leakage.
+
+2. APPLICABILITY
+
+This procedure applies to shell-and-tube heat exchangers in process cooling and condensate service, including HX-204.
+
+3. GENERAL EVIDENCE RULE
+
+Inspection observations must be distinguished from engineering assessment and maintenance recommendations. Visual evidence alone must not be treated as proof of active leakage, structural failure, unsafe operation, or loss of containment unless the applicable inspection evidence establishes the condition.
+
+4. EXTERNAL CORROSION AND COATING DAMAGE
+
+4.1 Localized external corrosion or coating deterioration at shell supports, saddles, flanges, or other accessible areas requires cleaning and surface preparation.
+
+4.2 After preparation, the affected area shall be inspected to determine the extent of metal loss.
+
+4.3 Damaged protective coating shall be repaired using the approved coating system for the equipment service.
+
+4.4 Findings shall be documented in the maintenance record, including location and follow-up inspection requirements.
+
+5. TUBE THINNING
+
+5.1 Tube thickness measurements below the nominal thickness shall be evaluated against the applicable minimum allowable thickness and approved inspection criteria.
+
+5.2 Where significant localized tube thinning is identified, the inspection results shall be reviewed by the responsible mechanical integrity or reliability engineer.
+
+5.3 If engineering assessment determines that a tube is not suitable for continued service, the approved maintenance response may include tube plugging or tube replacement during a planned shutdown.
+
+5.4 Tube plugging or replacement decisions shall be based on the approved tube inspection results and applicable engineering assessment. The procedure does not permit the AI system to declare a tube failed solely from an image.
+
+6. TUBE-SIDE DEPOSITS AND FOULING
+
+6.1 Deposits at the tube-sheet or tube-side area should be removed during the next planned maintenance opportunity when they may interfere with inspection or heat-transfer performance.
+
+6.2 After cleaning, selected tube areas should be re-inspected where the original deposits prevented adequate examination.
+
+7. SUSPECTED LEAKAGE
+
+7.1 Staining, deposits, or discoloration near a flange, gasket boundary, nozzle, or connection shall be treated as a verification item unless active leakage is established.
+
+7.2 Suspected leakage shall be verified using the applicable inspection or leak-detection method before the condition is classified as an active leak.
+
+7.3 The maintenance record shall state whether leakage was confirmed, not confirmed, or remains pending verification.
+
+8. HX-204 DEMONSTRATION GUIDANCE
+
+For HX-204 inspection findings:
+
+- External corrosion or coating deterioration around shell support or flange areas: clean, prepare, inspect, and repair the protective coating during planned maintenance.
+- Significant tube thinning: review thickness results through mechanical integrity engineering assessment and plan tube plugging or replacement if required by the approved assessment.
+- Tube-side deposits: clean during the next planned maintenance opportunity and re-inspect affected areas where necessary.
+- Condensate outlet staining: verify whether active leakage exists; do not classify staining as an active leak without supporting evidence.
+
+9. PRIORITY GUIDANCE
+
+High priority: confirmed loss of containment, structural integrity concerns, or engineering assessment requiring immediate action.
+
+Medium priority: significant corrosion or tube thinning requiring planned engineering review or maintenance before the next suitable operating/inspection milestone.
+
+Lower priority: coating repair, cleaning, monitoring, or verification items where the inspection evidence does not establish an immediate integrity threat.
+
+10. APPROVAL AND VERIFICATION
+
+Maintenance recommendations generated from this procedure are decision support. Final engineering disposition, maintenance authorization, and return-to-service decisions require review and approval by the responsible personnel.
+
+END OF CONTROLLED INTERNAL PROCEDURE
