@@ -32,7 +32,14 @@ class AgentState:
     metadata: Dict[str, Any] = field(
         default_factory=dict
     )
-
+    evidence: Dict[str, List[Dict[str, Any]]] = field(
+        default_factory=lambda: {
+            "document": [],
+            "vision": [],
+            "knowledge": [],
+            "inference": [],
+        }
+    )
     # Execution trace
     events: List[Dict[str, Any]] = field(
         default_factory=list
