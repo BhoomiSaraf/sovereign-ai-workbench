@@ -19,3 +19,31 @@ class PythonTool:
             "return_code": result.return_code,
             "timed_out": result.timed_out,
         }
+
+
+class _PythonRepl:
+    """
+    Compatibility interface for callers expecting a tool with
+    an .invoke({"code": ...}) method.
+
+    Execution still uses the existing PythonTool and PythonSandbox.
+    """
+
+    def invoke(self, arguments: dict) -> str:
+        code = arguments.get("code")
+
+        if not code:
+            raise ValueError("code is required.")
+
+        result = PythonTool().execute(code)
+
+        if result["success"]:
+            return result["stdout"]
+
+        return result["stderr"] or (
+            f"Execution failed with return code "
+            f"{result['return_code']}"
+        )
+
+
+python_repl = _PythonRepl()
