@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sovereign AI Workbench | Air-Gapped Industrial Intelligence</title>
+    <script>
+      (function() {
+        try {
+          var saved = localStorage.getItem('saw_theme');
+          if (saved === 'light' || saved === 'dark') {
+            document.documentElement.setAttribute('data-theme', saved);
+          } else if (window.matchMedia('(prefers-color-scheme: light)').matches) {
+            document.documentElement.setAttribute('data-theme', 'light');
+          }
+        } catch (e) {}
+      })();
+    </script>
+    <script type="module" crossorigin src="/assets/index-CTLSPa1e.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-BioJ7y9I.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>

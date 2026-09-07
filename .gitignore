@@ -58,11 +58,21 @@ Thumbs.db
 build/
 dist/
 *.egg-info/
+
+# Frontend Build (CRITICAL: Overrides the global dist/ ignore for deployment)
+!frontend/dist/
+node_modules/
+
+# Local Databases (Prevents SQLite merge conflicts)
+*.db
+*.sqlite3
+
 # Runtime knowledge/vector data
 data/vector_db/
 data/artifacts/
 
 # Keep curated demo knowledge files tracked
 # data/knowledge_base/ is intentionally NOT ignored
+
 # Local agent workspace
 workspace/
