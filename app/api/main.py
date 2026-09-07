@@ -1,3 +1,6 @@
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+import os
 from fastapi import FastAPI
 
 from app.api.artifacts import router as artifacts_router
@@ -38,3 +41,15 @@ def health():
         "external_network_required": False,
         "network": status,
     }
+
+# Define the path to your compiled frontend folder
+# Adjust this path based on where your 'dist' folder actually is
+frontend_dist_path = os.path.join(os.path.dirname(__file__), "../../frontend/dist")
+
+# Mount the assets folder (CSS, JS, images)
+app.mount("/assets", StaticFiles(directory=f"{frontend_dist_path}/assets"), name="assets")
+
+# Catch-all route to serve the React index.html for the UI
+@app.get("/{catchall:path}")
+def serve_react_app(catchall: str):
+    return FileResponse(f"{frontend_dist_path}/index.html")
