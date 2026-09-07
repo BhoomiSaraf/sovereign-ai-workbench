@@ -45,6 +45,12 @@ class AgentState:
         default_factory=list
     )
 
+    # Agent execution progress
+    current_step: Optional[str] = None
+    completed_steps: List[str] = field(
+        default_factory=list
+    )
+
     completed: bool = False
     error: Optional[str] = None
 

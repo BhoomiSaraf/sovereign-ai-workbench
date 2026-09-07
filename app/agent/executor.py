@@ -36,84 +36,305 @@ class AgentExecutor:
     ) -> AgentState:
 
         try:
-            # 1. Route task
-            self._execute_routing(state)
+            plan = state.metadata.get("plan", [])
 
-            # 2. Select tools
-            self._select_tools(state)
+            # Backward-compatible fallback for callers that do not
+            # provide a planner-generated plan.
+            if not plan:
+                plan = [
+                    "analyze_task",
+                    "route_model",
+                    "generate_response",
+                ]
 
-            # 3. Document processing
-            if self._should_process_document(state):
-                self._execute_document_processing(state)
+                state.metadata["plan"] = plan
 
-            # 4. Vision
-            if self._should_analyze_image(state):
-                self._execute_vision(state)
+            # Mark that execution is being driven by the planner.
+            state.metadata["execution_mode"] = "plan_driven"
 
-            # 5. Knowledge / RAG
-            if self._should_search_knowledge(state):
-                self._execute_knowledge_search(state)
+            state.add_event(
+                "plan",
+                "start",
+                steps=list(plan),
+            )
 
-            # 6. Calculator
-            if self._should_calculate(state):
-                self._execute_calculator(state)
+            # --------------------------------------------------
+            # PLAN-DRIVEN EXECUTION
+            # --------------------------------------------------
 
-                if self._is_calculation_only(state):
-                    state.response = str(
-                        state.tool_results["calculator"]
-                    )
+            for step in list(plan):
 
-                    state.evidence.setdefault(
-                        "inference",
-                        [],
-                    ).append(
-                        {
-                            "conclusion": state.response,
-                            "supporting_evidence": {
-                                "document": len(
-                                    state.evidence.get(
-                                        "document",
-                                        [],
-                                    )
-                                ),
-                                "vision": len(
-                                    state.evidence.get(
-                                        "vision",
-                                        [],
-                                    )
-                                ),
-                                "knowledge": len(
-                                    state.evidence.get(
-                                        "knowledge",
-                                        [],
-                                    )
-                                ),
-                            },
-                        }
-                    )
+                state.current_step = step
 
-                    state.completed = True
+                state.add_event(
+                    "step",
+                    "start",
+                    step=step,
+                )
+
+                # Avoid executing a step twice if the workflow
+                # is resumed or re-planned.
+                if step in state.completed_steps:
 
                     state.add_event(
-                        "execution",
-                        "complete",
-                        terminal_tool="calculator",
+                        "step",
+                        "skipped",
+                        step=step,
+                        reason="Already completed.",
                     )
 
-                    return state
+                    continue
 
-            # 7. Python sandbox
-            if self._should_execute_python(state):
-                self._execute_python(state)
+                # --------------------------------------------------
+                # TASK ANALYSIS
+                # --------------------------------------------------
 
-            # 8. Generate response
-            self._generate_response(state)
+                if step == "analyze_task":
 
-            # 9. Generate requested artifact
-            if self._should_generate_artifact(state):
-                self._execute_artifact(state)
+                    # AgentPlanner has already analyzed the task
+                    # before execution begins.
+                    state.add_event(
+                        "observation",
+                        "complete",
+                        step=step,
+                        requirements=state.task_requirements,
+                    )
 
+                # --------------------------------------------------
+                # MODEL ROUTING
+                # --------------------------------------------------
+
+                elif step == "route_model":
+
+                    self._execute_routing(state)
+
+                    # Tool selection happens immediately after
+                    # model routing because tool selection depends
+                    # on the task requirements.
+                    self._select_tools(state)
+
+                # --------------------------------------------------
+                # DOCUMENT PROCESSING
+                # --------------------------------------------------
+
+                elif step == "process_document":
+
+                    if self._should_process_document(state):
+
+                        self._execute_document_processing(
+                            state
+                        )
+
+                    else:
+
+                        state.add_event(
+                            "step",
+                            "skipped",
+                            step=step,
+                            reason=(
+                                "Document processing not required "
+                                "or no file supplied."
+                            ),
+                        )
+
+                # --------------------------------------------------
+                # VISION
+                # --------------------------------------------------
+
+                elif step == "analyze_image":
+
+                    if self._should_analyze_image(state):
+
+                        self._execute_vision(state)
+
+                    else:
+
+                        state.add_event(
+                            "step",
+                            "skipped",
+                            step=step,
+                            reason=(
+                                "Vision analysis not required "
+                                "or no usable image is available."
+                            ),
+                        )
+
+                # --------------------------------------------------
+                # KNOWLEDGE / RAG
+                # --------------------------------------------------
+
+                elif step == "search_knowledge":
+
+                    if self._should_search_knowledge(state):
+
+                        self._execute_knowledge_search(
+                            state
+                        )
+
+                    else:
+
+                        state.add_event(
+                            "step",
+                            "skipped",
+                            step=step,
+                            reason="Knowledge search not required.",
+                        )
+
+                # --------------------------------------------------
+                # CALCULATOR
+                # --------------------------------------------------
+
+                elif step == "calculator":
+
+                    if self._should_calculate(state):
+
+                        self._execute_calculator(state)
+
+                        # Preserve the existing calculator-only
+                        # behavior: do not call the language model
+                        # when the user's task is only a calculation.
+                        if self._is_calculation_only(state):
+
+                            state.response = str(
+                                state.tool_results["calculator"]
+                            )
+
+                            state.evidence.setdefault(
+                                "inference",
+                                [],
+                            ).append(
+                                {
+                                    "conclusion": state.response,
+                                    "supporting_evidence": {
+                                        "document": len(
+                                            state.evidence.get(
+                                                "document",
+                                                [],
+                                            )
+                                        ),
+                                        "vision": len(
+                                            state.evidence.get(
+                                                "vision",
+                                                [],
+                                            )
+                                        ),
+                                        "knowledge": len(
+                                            state.evidence.get(
+                                                "knowledge",
+                                                [],
+                                            )
+                                        ),
+                                    },
+                                }
+                            )
+
+                            self._complete_step(
+                                state,
+                                step,
+                            )
+
+                            state.completed = True
+                            state.current_step = None
+
+                            state.add_event(
+                                "execution",
+                                "complete",
+                                terminal_tool="calculator",
+                            )
+
+                            return state
+
+                    else:
+
+                        state.add_event(
+                            "step",
+                            "skipped",
+                            step=step,
+                            reason="Calculation not required.",
+                        )
+
+                # --------------------------------------------------
+                # PYTHON SANDBOX
+                # --------------------------------------------------
+
+                elif step == "python":
+
+                    if self._should_execute_python(state):
+
+                        self._execute_python(state)
+
+                    else:
+
+                        state.add_event(
+                            "step",
+                            "skipped",
+                            step=step,
+                            reason="Python execution not required.",
+                        )
+
+                # --------------------------------------------------
+                # RESPONSE GENERATION
+                # --------------------------------------------------
+
+                elif step == "generate_response":
+
+                    self._generate_response(state)
+
+                # --------------------------------------------------
+                # ARTIFACT GENERATION
+                # --------------------------------------------------
+
+                elif step == "generate_artifact":
+
+                    if self._should_generate_artifact(state):
+
+                        self._execute_artifact(state)
+
+                    else:
+
+                        state.add_event(
+                            "step",
+                            "skipped",
+                            step=step,
+                            reason="Artifact generation not required.",
+                        )
+
+                # --------------------------------------------------
+                # UNKNOWN STEP
+                # --------------------------------------------------
+
+                else:
+
+                    raise ValueError(
+                        f"Unknown agent plan step: {step}"
+                    )
+
+                # Record successful completion.
+                self._complete_step(
+                    state,
+                    step,
+                )
+
+                # Observe current progress and calculate the
+                # remaining work.
+                self._replan_remaining(
+                    state
+                )
+
+            # --------------------------------------------------
+            # WORKFLOW COMPLETE
+            # --------------------------------------------------
+
+            state.current_step = None
             state.completed = True
+
+            state.add_event(
+                "plan",
+                "complete",
+                completed_steps=list(
+                    state.completed_steps
+                ),
+            )
 
             state.add_event(
                 "execution",
@@ -124,6 +345,7 @@ class AgentExecutor:
 
         except Exception as exc:
 
+            state.current_step = None
             state.error = str(exc)
             state.completed = False
 
@@ -134,6 +356,66 @@ class AgentExecutor:
             )
 
             return state
+
+    # ==========================================================
+    # AGENT EXECUTION PROGRESS
+    # ==========================================================
+
+    def _complete_step(
+        self,
+        state: AgentState,
+        step: str,
+    ) -> None:
+        """
+        Record a successfully handled plan step once.
+        """
+
+        if step not in state.completed_steps:
+
+            state.completed_steps.append(
+                step
+            )
+
+        state.add_event(
+            "step",
+            "complete",
+            step=step,
+        )
+
+    def _replan_remaining(
+        self,
+        state: AgentState,
+    ) -> None:
+        """
+        Refresh the remaining plan after each observation.
+
+        The original plan is kept unchanged for compatibility.
+        The current remaining work is exposed separately through
+        state.metadata["remaining_plan"].
+        """
+
+        original_plan = state.metadata.get(
+            "plan",
+            [],
+        )
+
+        remaining = [
+            step
+            for step in original_plan
+            if step not in state.completed_steps
+        ]
+
+        state.metadata[
+            "remaining_plan"
+        ] = remaining
+
+        state.add_event(
+            "replan",
+            "complete",
+            remaining_steps=list(
+                remaining
+            ),
+        )
 
     # ==========================================================
     # ROUTING
