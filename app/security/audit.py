@@ -64,3 +64,21 @@ class AuditLogger:
                 continue
 
         return events
+
+
+_shared_logger: "AuditLogger | None" = None
+
+
+def get_audit_logger() -> "AuditLogger":
+    """
+    Return a process-wide AuditLogger so every API route appends
+    to the same local log file/lock instead of each creating its
+    own instance.
+    """
+
+    global _shared_logger
+
+    if _shared_logger is None:
+        _shared_logger = AuditLogger()
+
+    return _shared_logger
