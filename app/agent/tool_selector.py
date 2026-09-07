@@ -127,11 +127,9 @@ class ToolSelector:
         # PYTHON SANDBOX
         # ======================================================
 
-        if requirements.get("python_required"):
+        if requirements.get("code_execution_required"):
             tools.append("python")
-            reasons.append(
-                "The task requires sandboxed Python execution."
-            )
+            reasons.append("The task requires sandboxed code execution.")
 
         # ======================================================
         # ARTIFACT

@@ -5,6 +5,7 @@ from app.multimodal.page_selector import SemanticPageSelector
 from app.router.model_registry import get_model_by_name
 from app.router.model_router import ModelRouter
 from app.tools.registry import ToolRegistry
+import ast
 
 
 class AgentExecutor:
@@ -428,25 +429,6 @@ class AgentExecutor:
         step: str,
     ) -> bool:
 
-        if step == "code_execution":
-
-            result = state.tool_results.get(
-                "code_execution"
-            )
-
-            if result is None:
-                return False
-
-            if hasattr(result, "get"):
-                return bool(
-                    result.get(
-                        "success",
-                        False,
-                    )
-                )
-
-            return bool(result)
-
         if step == "validate":
             return bool(
                 state.validation.get(
@@ -455,7 +437,37 @@ class AgentExecutor:
                 )
             )
 
-        return True
+        tool_key_by_step = {
+            "process_document": "documents",
+            "analyze_image": "vision",
+            "search_knowledge": "knowledge_search",
+            "calculator": "calculator",
+            "code_execution": "code_execution",
+            "generate_artifact": "artifact",
+        }
+
+        tool_key = tool_key_by_step.get(step)
+
+        if tool_key is None:
+            return True
+
+        result = state.tool_results.get(tool_key)
+
+        if result is None:
+            # A skipped optional step is successful from the state
+            # machine's perspective; required tool failures raise
+            # before reaching this point.
+            return True
+
+        if step == "analyze_image" and isinstance(result, list):
+            if not result:
+                return True
+            return all(
+                self._tool_success(item.get("analysis"))
+                for item in result
+            )
+
+        return self._tool_success(result)
 
     def _step_error(
         self,
@@ -463,25 +475,31 @@ class AgentExecutor:
         step: str,
     ) -> str:
 
+        tool_key_by_step = {
+            "process_document": "documents",
+            "analyze_image": "vision",
+            "search_knowledge": "knowledge_search",
+            "calculator": "calculator",
+            "code_execution": "code_execution",
+            "generate_artifact": "artifact",
+        }
+
         result = state.tool_results.get(
-            step
+            tool_key_by_step.get(step, step)
         )
 
-        if hasattr(result, "get"):
+        if step == "analyze_image" and isinstance(result, list):
+            for item in result:
+                analysis = item.get("analysis")
+                if not self._tool_success(analysis):
+                    return self._tool_error(
+                        analysis,
+                        "Vision analysis failed.",
+                    )
 
-            return str(
-                result.get(
-                    "error"
-                )
-                or result.get(
-                    "stderr"
-                )
-                or "Tool execution failed."
-            )
-
-        return (
-            state.error
-            or f"{step} failed."
+        return self._tool_error(
+            result,
+            state.error or f"{step} failed.",
         )
 
     def _decide_recovery(
@@ -493,7 +511,11 @@ class AgentExecutor:
 
         # Code execution gets an explicit repair loop.
         # Python is the first supported runtime.
-        if step == "code_execution":
+        # Python/code execution gets an explicit repair loop.
+        if step in {
+            "python",
+            "code_execution",
+        }:
 
             if state.can_retry(
                 "code_repair",
@@ -560,16 +582,28 @@ class AgentExecutor:
             "code"
         )
 
+        generated = False
+
         if not code:
 
             code = self._generate_python_code(
                 state
             )
 
-            state.metadata[
-                "code"
-            ] = code
+            generated = True
 
+        # Always normalize model-generated code immediately before
+        # sandbox execution. This also protects code supplied by a
+        # prior workflow step or restored task state.
+        code = self._clean_generated_code(
+            code
+        )
+
+        state.metadata[
+            "code"
+        ] = code
+
+        if generated:
             state.add_event(
                 "code_generation",
                 "complete",
@@ -601,19 +635,12 @@ class AgentExecutor:
             "code_execution"
         ] = result
 
-        if hasattr(result, "get"):
-            success = result.get(
-                "success",
-                False,
-            )
-            error = result.get(
-                "error"
-            ) or result.get(
-                "stderr"
-            )
-        else:
-            success = bool(result)
-            error = None
+        success = self._tool_success(result)
+        error = (
+            self._tool_error(result)
+            if not success
+            else None
+        )
 
         state.add_event(
             "tool",
@@ -651,7 +678,21 @@ RULES:
   requires something already available locally.
 - Print the important final result.
 - Keep the program deterministic.
-
+- Preserve the units provided in the user request.
+- Do not convert between units unless the formula explicitly
+  requires it.
+- Keep all quantities dimensionally consistent.
+- If pressure and allowable stress use the same unit and radius
+  and corrosion allowance use the same length unit, calculate
+  the result in that same length unit.
+- Verify the numerical calculation before printing the result.
+- Do not label a value with a unit different from the unit used
+  in the calculation.
+- Use ASCII Python syntax only.
+- Use * for multiplication, never ×.
+- Use / for division, never ÷.
+- Use - for subtraction, never Unicode minus signs.
+- Use <=, >=, and != instead of Unicode comparison symbols.
 The program will be executed inside a restricted sandbox.
 """
 
@@ -704,6 +745,23 @@ RULES:
 - Preserve correct parts of the existing solution.
 - Make the smallest reliable correction.
 - Print the important final result.
+- Preserve the units provided in the user request.
+- Do not convert between units unless the formula explicitly
+  requires it.
+- Keep all quantities dimensionally consistent.
+- If pressure and allowable stress use the same unit and radius
+  and corrosion allowance use the same length unit, calculate
+  the result in that same length unit.
+- Verify the numerical calculation before printing the result.
+- Do not label a value with a unit different from the unit used
+  in the calculation.
+- Use ASCII Python syntax only.
+- Use * for multiplication, never ×.
+- Use / for division, never ÷.
+- Use - for subtraction, never Unicode minus signs.
+- Use <=, >=, and != instead of Unicode comparison symbols.
+- Verify that the corrected program still solves the original
+  request before returning it.
 """
 
         repaired = self.model_manager.generate(
@@ -737,32 +795,94 @@ RULES:
         ]
 
     @staticmethod
-    def _clean_generated_code(
-        code: str,
-    ) -> str:
-
+    def _clean_generated_code(code: str) -> str:
         text = str(code).strip()
 
-        if text.startswith(
-            "```python"
-        ):
-            text = text[
-                len("```python"):
-            ]
+        # Normalize common Unicode operators.
+        replacements = {
+            "×": "*",
+            "÷": "/",
+            "−": "-",
+            "–": "-",
+            "—": "-",
+            "≤": "<=",
+            "≥": ">=",
+            "≠": "!=",
+        }
 
-        elif text.startswith(
-            "```"
-        ):
-            text = text[
-                len("```"):
-            ]
+        for source, target in replacements.items():
+            text = text.replace(source, target)
 
-        if text.endswith(
-            "```"
-        ):
-            text = text[:-3]
+        # ---------------------------------------------------------
+        # 1. Extract Python from Markdown fenced code blocks.
+        # ---------------------------------------------------------
+        if "```" in text:
+            blocks = text.split("```")
 
-        return text.strip()
+            for block in blocks:
+                candidate = block.strip()
+
+                if candidate.startswith("python"):
+                    candidate = candidate[len("python"):].lstrip()
+
+                elif candidate.startswith("py"):
+                    candidate = candidate[len("py"):].lstrip()
+
+                if not candidate:
+                    continue
+
+                try:
+                    ast.parse(candidate)
+                    return candidate
+                except SyntaxError:
+                    continue
+
+        # ---------------------------------------------------------
+        # 2. The entire response may already be valid Python.
+        # ---------------------------------------------------------
+        try:
+            ast.parse(text)
+            return text
+        except SyntaxError:
+            pass
+
+        # ---------------------------------------------------------
+        # 3. Handle LLM prose followed by Python code.
+        # ---------------------------------------------------------
+        lines = text.splitlines()
+
+        python_starts = (
+            "import ",
+            "from ",
+            "def ",
+            "class ",
+            "if ",
+            "for ",
+            "while ",
+            "try:",
+            "with ",
+            "print(",
+            "# ",
+        )
+
+        for index, line in enumerate(lines):
+            stripped = line.strip()
+
+            if stripped.startswith(python_starts):
+                candidate = "\n".join(lines[index:]).strip()
+
+                try:
+                    ast.parse(candidate)
+                    return candidate
+                except SyntaxError:
+                    continue
+
+        # ---------------------------------------------------------
+        # 4. Nothing valid was extracted.
+        #    Return the original text so the sandbox reports
+        #    the real failure and the repair loop can handle it.
+        # ---------------------------------------------------------
+        return text
 
     # ==========================================================
     # FINAL VALIDATION
@@ -802,6 +922,12 @@ RULES:
                 {},
             )
 
+            if not isinstance(code_result, dict):
+                code_result = {
+                    "success": bool(code_result),
+                    "message": str(code_result),
+                }
+
             if not code_result.get(
                 "success",
                 True,
@@ -816,7 +942,9 @@ RULES:
 
             raise RuntimeError(
                 "Final validation failed."
-            )    # ==========================================================
+            )
+
+    # ==========================================================
     # AGENT EXECUTION PROGRESS
     # ==========================================================
 
@@ -950,6 +1078,111 @@ RULES:
         )
 
     # ==========================================================
+    # TOOL RESULT NORMALIZATION
+    # ==========================================================
+
+    @staticmethod
+    def _tool_success(
+        result,
+    ) -> bool:
+        """
+        Return the success flag for both the current structured
+        ToolResult contract and legacy raw dict/scalar results.
+        """
+
+        if result is None:
+            return False
+
+        if hasattr(result, "success"):
+            return bool(result.success)
+
+        if isinstance(result, dict):
+            return bool(result.get("success", False))
+
+        return bool(result)
+
+    @staticmethod
+    def _tool_error(
+        result,
+        default: str = "Tool execution failed.",
+    ) -> str:
+        """
+        Extract a useful error from a ToolResult, legacy dict,
+        or nested execution metadata.
+        """
+
+        if result is None:
+            return default
+
+        error = getattr(result, "error", None)
+
+        if error:
+            return str(error)
+
+        if hasattr(result, "get"):
+            error = result.get("error")
+
+            if error:
+                return str(error)
+
+            error = result.get("stderr")
+
+            if error:
+                return str(error)
+
+        return default
+
+    @staticmethod
+    def _tool_value(
+        result,
+        default=None,
+    ):
+        """
+        Unwrap the payload of a structured ToolResult while
+        preserving compatibility with legacy dict/scalar results.
+        """
+
+        if result is None:
+            return default
+
+        if hasattr(result, "result"):
+            return result.result
+
+        if isinstance(result, dict):
+            # Structured result.
+            if "success" in result and "result" in result:
+                return result.get("result", default)
+
+            # Legacy raw dictionary.
+            return result
+
+        return result
+
+    def _require_tool_success(
+        self,
+        result,
+        tool_name: str,
+    ):
+        """
+        Enforce the structured tool contract at executor boundaries.
+
+        Tool implementations may return ToolResult directly, while
+        older tools may still return compatible raw values. A failed
+        result is converted into an actionable RuntimeError so the
+        iterative executor can observe and recover from the failure.
+        """
+
+        if not self._tool_success(result):
+            raise RuntimeError(
+                self._tool_error(
+                    result,
+                    f"{tool_name} execution failed.",
+                )
+            )
+
+        return self._tool_value(result)
+
+    # ==========================================================
     # DOCUMENTS
     # ==========================================================
 
@@ -999,7 +1232,14 @@ RULES:
             file_path=file_path,
         )
 
+        # Preserve the structured result for audit/API consumers.
         state.tool_results["documents"] = result
+
+        # Fail before creating evidence if the document tool failed.
+        self._require_tool_success(
+            result,
+            "documents",
+        )
         state.metadata["document_result"] = result
 
         # Structured evidence.
@@ -1067,10 +1307,12 @@ RULES:
             return True
 
         # Scanned PDF with rendered pages.
-        document_result = (
-            state.tool_results.get(
-                "documents"
-            )
+        document_result = state.tool_results.get(
+            "documents"
+        )
+
+        document_result = self._tool_value(
+            document_result
         )
 
         if isinstance(
@@ -1291,6 +1533,14 @@ RULES:
                 prompt=prompt,
             )
 
+            if not self._tool_success(result):
+                raise RuntimeError(
+                    self._tool_error(
+                        result,
+                        "Vision analysis failed.",
+                    )
+                )
+
             outputs.append(
                 {
                     "page_number": page[
@@ -1421,6 +1671,7 @@ RULES:
                 False,
             )
         )
+
     def _execute_knowledge_search(
         self,
         state: AgentState,
@@ -1432,24 +1683,45 @@ RULES:
                 "Knowledge search tool is not registered."
             )
 
-        result = self.tool_registry.execute(
+        tool_result = self.tool_registry.execute(
             "knowledge_search",
             query=state.user_input,
             top_k=5,
         )
 
+        # Preserve the structured tool result for audit/API consumers.
+        state.tool_results[
+            "knowledge_search"
+        ] = tool_result
+
+        # Unwrap the payload only for retrieval processing.
+        result = self._require_tool_success(
+            tool_result,
+            "knowledge_search",
+        )
+
+        if result is None:
+            result = []
+
+        if not isinstance(result, list):
+            raise RuntimeError(
+                "Knowledge search returned an invalid result format."
+            )
+
         # ------------------------------------------------------
         # Keep retrieval context source-consistent when one
         # source clearly dominates the retrieved results.
-        #
-        # This is generic: it is not tied to HX-204, pumps,
-        # or any specific SOP.
         # ------------------------------------------------------
 
         if result:
             source_counts = {}
 
             for item in result:
+                if not isinstance(item, dict):
+                    raise RuntimeError(
+                        "Knowledge search returned a malformed result item."
+                    )
+
                 source = item.get("source")
 
                 if source:
@@ -1476,10 +1748,6 @@ RULES:
                     ]
 
         state.knowledge_context = result
-
-        state.tool_results[
-            "knowledge_search"
-        ] = result
 
         # Structured private-knowledge evidence.
         for item in result:
@@ -1510,6 +1778,7 @@ RULES:
             tool="knowledge_search",
             results=len(result),
         )
+
     # ==========================================================
     # CALCULATOR
     # ==========================================================
@@ -1518,12 +1787,32 @@ RULES:
         self,
         state: AgentState,
     ) -> bool:
+        """
+        Use the deterministic calculator only when the task
+        requires a standalone arithmetic calculation.
 
-        return self._has_selected_tool(
+        If Python execution is explicitly requested, let the
+        sandboxed Python path perform the calculation and
+        verification instead of passing natural language to
+        SafeCalculator.
+        """
+
+        if not self._has_selected_tool(
             state,
             "calculator",
-        )
+        ):
+            return False
 
+        requirements = state.task_requirements
+
+        if isinstance(requirements, dict):
+            if requirements.get(
+                "code_execution_required",
+                False,
+            ):
+                return False
+
+        return True
     def _execute_calculator(
         self,
         state: AgentState,
@@ -1548,6 +1837,14 @@ RULES:
         state.tool_results[
             "calculator"
         ] = result
+
+        if not self._tool_success(result):
+            raise RuntimeError(
+                self._tool_error(
+                    result,
+                    "Calculator execution failed.",
+                )
+            )
 
         state.metadata[
             "tool_used"
@@ -1706,12 +2003,23 @@ RULES:
 
         state.add_event(
             "tool",
-            "complete",
+            "complete" if self._tool_success(result) else "failed",
             tool="python",
-            success=result.get(
-                "success"
+            success=self._tool_success(result),
+            error=(
+                self._tool_error(result)
+                if not self._tool_success(result)
+                else None
             ),
         )
+
+        if not self._tool_success(result):
+            raise RuntimeError(
+                self._tool_error(
+                    result,
+                    "Python execution failed.",
+                )
+            )
 
     # ==========================================================
     # ARTIFACTS
@@ -1773,10 +2081,12 @@ RULES:
         # Preserve document extraction behavior.
         if "documents" in state.tool_results:
 
-            document_result = (
-                state.tool_results[
-                    "documents"
-                ]
+            document_result = state.tool_results[
+                "documents"
+            ]
+
+            document_result = self._tool_value(
+                document_result
             )
 
             if isinstance(
@@ -1845,6 +2155,14 @@ RULES:
         state.tool_results[
             "artifact"
         ] = result
+
+        if not self._tool_success(result):
+            raise RuntimeError(
+                self._tool_error(
+                    result,
+                    "Artifact generation failed.",
+                )
+            )
 
         state.metadata[
             "artifact_path"
@@ -2141,7 +2459,30 @@ RULES:
                 "verified.",
             ]
         )
+        # ------------------------------------------------------
+        # Code execution response
+        # ------------------------------------------------------
 
+        if state.metadata.get("code"):
+            sections.extend(
+                [
+                    "",
+                    "GENERATED CODE:",
+                    str(
+                        state.metadata[
+                            "code"
+                        ]
+                    ),
+                    "",
+                    "CODE RESPONSE REQUIREMENTS:",
+                    "Include the generated code in the final answer.",
+                    "Explain briefly what the code does.",
+                    "Include the actual sandbox execution result.",
+                    "State whether execution succeeded or failed.",
+                    "Do not omit the generated code when the user "
+                    "requested code.",
+                ]
+            )
         return "\n".join(
             sections
         )

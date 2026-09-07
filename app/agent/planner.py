@@ -229,6 +229,11 @@ class AgentPlanner:
         "debug the script",
         "compile and run",
         "compile and test",
+        "execute and verify",
+        "verify the code",
+        "verify code",
+        "execute and test",
+        "run and verify",
     ]
         code_required = any(
             term in text_lower

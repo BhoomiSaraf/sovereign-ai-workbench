@@ -396,9 +396,20 @@ export default function TaskWorkspace() {
             {result.tool_results?.python ? (
               <CodeTerminal
                 title="Python Sandbox Execution Output"
-                code={String((result.tool_results.python as any)?.code || '# Verified Sandbox Script')}
-                output={String((result.tool_results.python as any)?.stdout || '')}
-                error={(result.tool_results.python as any)?.stderr || null}
+                code={String(
+                  (result.tool_results.python as any)?.metadata?.code ||
+                  '# Python script executed in isolated sandbox'
+                )}
+                output={String(
+                  (result.tool_results.python as any)?.result ||
+                  (result.tool_results.python as any)?.metadata?.stdout ||
+                  ''
+                )}
+                error={
+                  (result.tool_results.python as any)?.error ||
+                  (result.tool_results.python as any)?.metadata?.stderr ||
+                  null
+                }
               />
             ) : null}
 
