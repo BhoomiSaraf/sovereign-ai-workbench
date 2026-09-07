@@ -30,7 +30,7 @@ class PythonSandbox:
 
     def __init__(
         self,
-        image: str = "python:3.11-slim",
+        image: str = "python:3.13-slim",
         timeout_seconds: int = 10,
         memory: str = "512m",
         cpus: str = "1.0",
@@ -81,6 +81,7 @@ class PythonSandbox:
                     capture_output=True,
                     text=True,
                     timeout=self.timeout_seconds,
+                    stdin=subprocess.DEVNULL,
                 )
 
                 return SandboxResult(
