@@ -64,6 +64,20 @@ class FakeStore:
             ],
         }
 
+    def similarity_search_with_score(
+        self,
+        embedding,
+        top_k,
+    ):
+        raw = self.search(embedding, top_k)
+        documents = raw["documents"][0]
+        metadatas = raw["metadatas"][0]
+        distances = raw["distances"][0]
+
+        return list(
+            zip(documents, metadatas, distances)
+        )
+
 
 def test_chunk_text_creates_chunks():
     text = "A" * 1000

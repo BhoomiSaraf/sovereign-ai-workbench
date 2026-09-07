@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import chromadb
 
@@ -86,6 +86,51 @@ class ChromaStore:
             query_embeddings=[embedding],
             n_results=top_k,
         )
+
+    def similarity_search_with_score(
+        self,
+        embedding: List[float],
+        top_k: int = 5,
+    ) -> List[Tuple[str, Dict[str, Any], float]]:
+        """
+        Local ChromaDB analogue of similarity_search_with_score.
+
+        Returns (document, metadata, l2_distance) tuples.
+        Lower distance is a stronger match.
+        """
+
+        results = self.search(
+            embedding=embedding,
+            top_k=top_k,
+        )
+
+        documents = results.get("documents", [[]])[0]
+        metadatas = results.get("metadatas", [[]])[0]
+        distances = results.get("distances", [[]])[0]
+
+        scored: List[Tuple[str, Dict[str, Any], float]] = []
+
+        for index, document in enumerate(documents):
+            metadata = (
+                metadatas[index]
+                if index < len(metadatas)
+                else {}
+            )
+            distance = (
+                distances[index]
+                if index < len(distances)
+                else 0.0
+            )
+
+            scored.append(
+                (
+                    document,
+                    metadata or {},
+                    float(distance),
+                )
+            )
+
+        return scored
 
     def count(self) -> int:
         """Return the number of stored chunks."""

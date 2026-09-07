@@ -49,7 +49,7 @@ class KnowledgeTool:
 
         return [
             {
-                "text": result.text,
+                "text": self.retriever.format_citation(result),
                 "source": result.source,
                 "score": result.score,
                 "metadata": result.metadata,

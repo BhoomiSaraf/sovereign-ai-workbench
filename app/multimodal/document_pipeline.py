@@ -46,6 +46,8 @@ class DocumentPipeline:
         ".pdf",
         ".docx",
         ".txt",
+        ".md",
+        ".markdown",
     }
 
     def __init__(
@@ -90,7 +92,13 @@ class DocumentPipeline:
         if extension == ".docx":
             return self._extract_docx(path)
 
-        return self._extract_txt(path)
+        file_type = (
+            "md"
+            if extension in {".md", ".markdown"}
+            else "txt"
+        )
+
+        return self._extract_txt(path, file_type=file_type)
 
     # ==========================================================
     # PDF
@@ -308,6 +316,7 @@ class DocumentPipeline:
     def _extract_txt(
         self,
         file_path: Path,
+        file_type: str = "txt",
     ) -> DocumentExtractionResult:
 
         text = file_path.read_text(
@@ -318,7 +327,7 @@ class DocumentPipeline:
         return DocumentExtractionResult(
             text=text,
             source=str(file_path),
-            file_type="txt",
+            file_type=file_type,
             page_count=0,
             requires_ocr=False,
             ocr_used=False,

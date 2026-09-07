@@ -1,4 +1,5 @@
 import os
+import json
 from pathlib import Path
 from typing import List, Optional
 
@@ -58,19 +59,67 @@ class EmbeddingModel:
             if path.is_dir()
         ]
 
-        if not snapshots:
+        usable = [
+            path for path in snapshots
+            if self._snapshot_is_usable(path)
+        ]
+
+        if not usable:
             raise FileNotFoundError(
-                f"No local snapshot found for {self.model_name} "
+                f"No complete local snapshot found for {self.model_name} "
                 f"inside {snapshots_dir}"
             )
 
-        # Use the newest locally available snapshot.
+        preferred_ref = model_dir / "refs" / "main"
+
+        if preferred_ref.exists():
+            preferred_hash = preferred_ref.read_text(
+                encoding="utf-8"
+            ).strip()
+            preferred = snapshots_dir / preferred_hash
+
+            if preferred in usable:
+                return str(preferred)
+
         snapshot = max(
-            snapshots,
+            usable,
             key=lambda path: path.stat().st_mtime,
         )
 
         return str(snapshot)
+
+    def _snapshot_is_usable(self, snapshot: Path) -> bool:
+        """
+        A snapshot is usable only if it has a recognisable
+        transformers config and local model weights.
+        """
+
+        config_path = snapshot / "config.json"
+
+        if not config_path.exists():
+            return False
+
+        try:
+            config = json.loads(
+                config_path.read_text(encoding="utf-8")
+            )
+        except Exception:
+            return False
+
+        if not config.get("model_type"):
+            return False
+
+        weight_names = (
+            "pytorch_model.bin",
+            "model.safetensors",
+            "pytorch_model.bin.index.json",
+            "model.safetensors.index.json",
+        )
+
+        return any(
+            (snapshot / name).exists()
+            for name in weight_names
+        )
 
     @property
     def model(self) -> SentenceTransformer:
