@@ -64,3 +64,5 @@ data/artifacts/
 
 # Keep curated demo knowledge files tracked
 # data/knowledge_base/ is intentionally NOT ignored
+# Local agent workspace
+workspace/
