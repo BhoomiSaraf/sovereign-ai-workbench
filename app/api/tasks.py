@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -12,6 +12,14 @@ from app.agent.orchestrator import AgentOrchestrator
 from app.agent.state import AgentState
 from app.api.files import IMAGE_EXTENSIONS, UPLOAD_DIRECTORY
 from app.api.models import TaskCreate, TaskResponse
+from app.database import (
+    get_task,
+    init_db,
+    insert_audit_log,
+    insert_task,
+    list_tasks,
+    update_task,
+)
 from app.security.audit import get_audit_logger
 
 
@@ -20,30 +28,30 @@ router = APIRouter(
     tags=["tasks"],
 )
 
+# Initialise the SQLite schema on first import.
+init_db()
 
-TASK_STORE: dict[str, dict[str, Any]] = {}
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
 
 
 def _resolve_uploaded_file(file_id: str) -> Path | None:
     """
     Resolve a file_id (returned by POST /files/upload) back to the
-    file it saved, without needing to know the extension.
+    file it was saved under, without needing to know the extension.
     """
-
     matches = list(UPLOAD_DIRECTORY.glob(f"{file_id}.*"))
     return matches[0] if matches else None
 
 
-def _log_task_events(
-    task_id: str,
-    state: AgentState,
-) -> None:
+def _log_task_events(task_id: str, state: AgentState) -> None:
     """
     Mirror the agent's in-memory execution trace (state.events) into
-    the local append-only audit log, so /audit/recent reflects the
-    same steps the UI's execution trace shows.
+    both the append-only JSONL audit log AND the SQLite audit_logs
+    table so every source of truth stays consistent.
     """
-
     audit = get_audit_logger()
 
     for event in state.events:
@@ -53,6 +61,7 @@ def _log_task_events(
             if key not in ("type", "status")
         }
 
+        # JSONL file (existing behaviour — keep intact)
         audit.record(
             event["type"].upper(),
             status=event["status"],
@@ -60,53 +69,45 @@ def _log_task_events(
             **details,
         )
 
+        # SQLite audit_logs table (new)
+        insert_audit_log(
+            event_type=event["type"].upper(),
+            task_id=task_id,
+            details={"status": event["status"], **details},
+        )
+
+
+# ---------------------------------------------------------------------------
+# Request schema for the legacy POST /tasks endpoint
+# ---------------------------------------------------------------------------
+
 
 class TaskRequest(BaseModel):
-    message: str = Field(
-        ...,
-        min_length=1,
-    )
+    message: str = Field(..., min_length=1)
     file_path: str | None = None
     has_image: bool = False
     image_path: str | None = None
 
 
-# ==========================================================
-# EXISTING AGENT WORKFLOW
-# ==========================================================
+# ===========================================================================
+# LEGACY AGENT WORKFLOW  (POST /tasks  +  GET /tasks  +  GET /tasks/{id})
+# ===========================================================================
 
 
 @router.get("")
-def list_tasks():
-    """Return the current in-memory task list."""
-
-    tasks = []
-
-    for task_id, payload in TASK_STORE.items():
-        tasks.append(
-            {
-                "task_id": task_id,
-                **payload,
-            }
-        )
-
-    return {
-        "count": len(tasks),
-        "tasks": tasks,
-    }
+def list_tasks_endpoint():
+    """Return all persisted tasks, newest first."""
+    rows = list_tasks()
+    return {"count": len(rows), "tasks": rows}
 
 
 @router.get("/{task_id}")
-def get_task(task_id: str):
-    """Fetch a single task by ID."""
-
-    task = TASK_STORE.get(task_id)
+def get_task_endpoint(task_id: str):
+    """Fetch a single task by ID from SQLite."""
+    task = get_task(task_id)
 
     if task is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Task not found",
-        )
+        raise HTTPException(status_code=404, detail="Task not found")
 
     return task
 
@@ -114,15 +115,27 @@ def get_task(task_id: str):
 @router.post("")
 async def create_task(request: TaskRequest):
     """Create and execute a task using the local agent workflow."""
-
     task_id = uuid4().hex
+    now = datetime.now(timezone.utc)
     audit = get_audit_logger()
 
-    audit.record(
-        "TASK_STARTED",
+    # Persist task row immediately so GET /tasks/{id} works right away.
+    insert_task(
         task_id=task_id,
-        message=request.message,
+        task_type="chat",
+        prompt=request.message,
+        created_at=now,
     )
+
+    # SQLite audit entry
+    insert_audit_log(
+        event_type="TASK_STARTED",
+        task_id=task_id,
+        details={"message": request.message},
+    )
+
+    # JSONL audit entry (existing behaviour)
+    audit.record("TASK_STARTED", task_id=task_id, message=request.message)
 
     try:
         agent = AgentOrchestrator()
@@ -136,12 +149,43 @@ async def create_task(request: TaskRequest):
 
         _log_task_events(task_id, state)
 
-        task_payload = {
-            "status": (
-                "success"
-                if state.completed
-                else "error"
-            ),
+        final_status = "success" if state.completed else "error"
+        artifacts: list[str] = []
+        if state.metadata.get("artifact_path"):
+            artifacts = [state.metadata["artifact_path"]]
+
+        update_task(
+            task_id=task_id,
+            status=final_status,
+            result=state.response,
+            model=state.selected_model,
+            artifacts=artifacts,
+        )
+
+        completion_event = (
+            "TASK_COMPLETED" if state.completed else "TASK_FAILED"
+        )
+
+        insert_audit_log(
+            event_type=completion_event,
+            task_id=task_id,
+            details={
+                "status": final_status,
+                "selected_model": state.selected_model,
+                "error": state.error,
+            },
+        )
+        audit.record(
+            completion_event,
+            status=final_status,
+            task_id=task_id,
+            selected_model=state.selected_model,
+            error=state.error,
+        )
+
+        return {
+            "task_id": task_id,
+            "status": final_status,
             "selected_model": state.selected_model,
             "response": state.response,
             "completed": state.completed,
@@ -152,22 +196,14 @@ async def create_task(request: TaskRequest):
             "routing_reason": state.routing_reason,
         }
 
-        TASK_STORE[task_id] = task_payload
-
-        audit.record(
-            "TASK_COMPLETED" if state.completed else "TASK_FAILED",
-            status="success" if state.completed else "error",
-            task_id=task_id,
-            selected_model=state.selected_model,
-            error=state.error,
-        )
-
-        return {
-            "task_id": task_id,
-            **task_payload,
-        }
-
     except Exception as exc:
+        update_task(task_id=task_id, status="error", result=str(exc))
+
+        insert_audit_log(
+            event_type="TASK_FAILED",
+            task_id=task_id,
+            details={"status": "error", "error": str(exc)},
+        )
         audit.record(
             "TASK_FAILED",
             status="error",
@@ -175,38 +211,33 @@ async def create_task(request: TaskRequest):
             error=str(exc),
         )
 
-        raise HTTPException(
-            status_code=500,
-            detail=str(exc),
-        ) from exc
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-# ==========================================================
-# UI-FRIENDLY TASK START ENDPOINT
-# ==========================================================
+# ===========================================================================
+# UI-FRIENDLY START ENDPOINT  (POST /tasks/start)
+# ===========================================================================
 
 
 @router.post(
     "/start",
     response_model=TaskResponse,
 )
-async def start_task(
-    task_request: TaskCreate,
-):
+async def start_task(task_request: TaskCreate):
     """
-    Start a task using the existing local agent workflow.
+    Start a task using the local agent workflow.
 
-    This preserves the /tasks/start API expected by the UI
-    while still using the real AgentOrchestrator rather than
-    a mock response or fake database.
+    Writes the task and an initial TASK_STARTED audit row to SQLite
+    immediately, so the UI can poll GET /tasks/{task_id} and
+    GET /audit/{task_id} from the moment the request is accepted.
     """
-
     task_id = uuid4().hex
+    now = datetime.now(timezone.utc)
     audit = get_audit_logger()
 
-    # Resolve an uploaded file_id (from POST /files/upload) back to
-    # the path it was saved under, and route it as a document or an
-    # image depending on its extension.
+    # ------------------------------------------------------------------
+    # Resolve optional uploaded file
+    # ------------------------------------------------------------------
     file_path: str | None = None
     image_path: str | None = None
     has_image = False
@@ -226,14 +257,31 @@ async def start_task(
         else:
             file_path = str(resolved)
 
-    TASK_STORE[task_id] = {
-        "status": "running",
-        "created_at": datetime.now(),
-        "task_type": task_request.task_type,
-        "prompt": task_request.prompt,
-        "result": None,
-    }
+    # ------------------------------------------------------------------
+    # Persist task row  — status starts as 'running'
+    # ------------------------------------------------------------------
+    insert_task(
+        task_id=task_id,
+        task_type=task_request.task_type,
+        prompt=task_request.prompt,
+        created_at=now,
+    )
 
+    # ------------------------------------------------------------------
+    # Initial audit log row
+    # ------------------------------------------------------------------
+    insert_audit_log(
+        event_type="TASK_STARTED",
+        task_id=task_id,
+        details={
+            "task_type": task_request.task_type,
+            "prompt": task_request.prompt,
+            "file_id": task_request.file_id,
+        },
+        timestamp=now,
+    )
+
+    # JSONL file (existing behaviour)
     audit.record(
         "TASK_STARTED",
         task_id=task_id,
@@ -242,6 +290,9 @@ async def start_task(
         file_id=task_request.file_id,
     )
 
+    # ------------------------------------------------------------------
+    # Run agent
+    # ------------------------------------------------------------------
     try:
         agent = AgentOrchestrator()
 
@@ -254,48 +305,65 @@ async def start_task(
 
         _log_task_events(task_id, state)
 
-        TASK_STORE[task_id].update(
-            {
-                "status": (
-                    "success"
-                    if state.completed
-                    else "error"
-                ),
-                "result": state.response,
-                "metadata": state.metadata,
-                "events": state.events,
-                "selected_model": state.selected_model,
-            }
+        final_status = "success" if state.completed else "error"
+        artifacts: list[str] = []
+        if state.metadata.get("artifact_path"):
+            artifacts = [state.metadata["artifact_path"]]
+
+        update_task(
+            task_id=task_id,
+            status=final_status,
+            result=state.response,
+            model=state.selected_model,
+            artifacts=artifacts,
+            completed_at=datetime.now(timezone.utc),
         )
 
+        completion_event = (
+            "TASK_COMPLETED" if state.completed else "TASK_FAILED"
+        )
+
+        insert_audit_log(
+            event_type=completion_event,
+            task_id=task_id,
+            details={
+                "status": final_status,
+                "selected_model": state.selected_model,
+                "error": state.error,
+            },
+        )
         audit.record(
-            "TASK_COMPLETED" if state.completed else "TASK_FAILED",
-            status="success" if state.completed else "error",
+            completion_event,
+            status=final_status,
             task_id=task_id,
             selected_model=state.selected_model,
             error=state.error,
         )
 
-        return {
-            "task_id": task_id,
-            "status": TASK_STORE[task_id]["status"],
-            "created_at": TASK_STORE[task_id]["created_at"],
-            "result": state.response,
-            "artifacts": (
-                [state.metadata["artifact_path"]]
-                if state.metadata.get("artifact_path")
-                else None
-            ),
-        }
+        # Re-fetch so the response reflects exactly what is in the DB.
+        persisted = get_task(task_id)
 
-    except Exception as exc:
-        TASK_STORE[task_id].update(
-            {
-                "status": "error",
-                "result": str(exc),
-            }
+        return TaskResponse(
+            task_id=task_id,
+            status=persisted["status"],
+            created_at=datetime.fromisoformat(persisted["created_at"]),
+            result=persisted["result"],
+            artifacts=persisted.get("artifacts") or [],
         )
 
+    except Exception as exc:
+        update_task(
+            task_id=task_id,
+            status="error",
+            result=str(exc),
+            completed_at=datetime.now(timezone.utc),
+        )
+
+        insert_audit_log(
+            event_type="TASK_FAILED",
+            task_id=task_id,
+            details={"status": "error", "error": str(exc)},
+        )
         audit.record(
             "TASK_FAILED",
             status="error",
@@ -303,7 +371,4 @@ async def start_task(
             error=str(exc),
         )
 
-        raise HTTPException(
-            status_code=500,
-            detail=str(exc),
-        ) from exc
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
