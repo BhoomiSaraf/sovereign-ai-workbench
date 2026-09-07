@@ -1,139 +1,188 @@
-import ast
+﻿import ast
 import operator
+from typing import Any
+
+
+_BINARY_OPERATORS = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+    ast.FloorDiv: operator.floordiv,
+    ast.Mod: operator.mod,
+    ast.Pow: operator.pow,
+}
+
+_UNARY_OPERATORS = {
+    ast.UAdd: operator.pos,
+    ast.USub: operator.neg,
+}
 
 
 class SafeCalculator:
     """
-    Safe arithmetic calculator.
+    Deterministic arithmetic calculator.
 
-    Uses Python's AST parser instead of eval(), and only permits
-    explicitly supported arithmetic operations.
+    Uses Python AST parsing instead of eval().
     """
 
-    _OPERATORS = {
-        ast.Add: operator.add,
-        ast.Sub: operator.sub,
-        ast.Mult: operator.mul,
-        ast.Div: operator.truediv,
-        ast.FloorDiv: operator.floordiv,
-        ast.Mod: operator.mod,
-        ast.Pow: operator.pow,
-        ast.USub: operator.neg,
-        ast.UAdd: operator.pos,
-    }
+    def calculate(
+        self,
+        expression: str,
+    ) -> float | int:
 
-    def calculate(self, expression: str) -> float:
-        """
-        Evaluate a mathematical expression safely.
+        value, _, _ = self._evaluate(expression)
 
-        Supported:
-            +, -, *, /, //, %, **
-            parentheses
-            positive/negative numbers
+        return value
 
-        Examples:
-            15 * 17
-            (100 + 50) / 5
-            2 ** 8
-        """
+    def explain(
+        self,
+        expression: str,
+    ) -> dict[str, Any]:
+
+        value, steps, intermediate_values = (
+            self._evaluate(expression)
+        )
+
+        return {
+            "expression": expression,
+            "steps": steps,
+            "intermediate_values": intermediate_values,
+            "final_result": value,
+        }
+
+    def _evaluate(
+        self,
+        expression: str,
+    ) -> tuple[
+        float | int,
+        list[str],
+        list[float | int],
+    ]:
 
         if not expression or not expression.strip():
             raise ValueError(
                 "Expression cannot be empty."
             )
 
-        try:
-            tree = ast.parse(
-                expression,
-                mode="eval",
-            )
-        except SyntaxError as exc:
-            raise ValueError(
-                "Invalid mathematical expression."
-            ) from exc
-
-        return self._evaluate(tree.body)
-
-    def _evaluate(self, node):
-        """
-        Recursively evaluate an allowed AST node.
-        """
-
-        if isinstance(node, ast.Constant):
-
-            if isinstance(node.value, bool):
-                raise ValueError(
-                    "Boolean values are not supported."
-                )
-
-            if isinstance(
-                node.value,
-                (int, float),
-            ):
-                return node.value
-
-            raise ValueError(
-                "Only numeric values are supported."
-            )
-
-        if isinstance(
-            node,
-            ast.BinOp,
-        ):
-            operator_function = self._OPERATORS.get(
-                type(node.op)
-            )
-
-            if operator_function is None:
-                raise ValueError(
-                    "Unsupported arithmetic operator."
-                )
-
-            left = self._evaluate(node.left)
-            right = self._evaluate(node.right)
-
-            try:
-                return operator_function(
-                    left,
-                    right,
-                )
-            except ZeroDivisionError as exc:
-                raise ValueError(
-                    "Division by zero is not allowed."
-                ) from exc
-            except (OverflowError, ValueError) as exc:
-                raise ValueError(
-                    "Invalid arithmetic operation."
-                ) from exc
-
-        if isinstance(
-            node,
-            ast.UnaryOp,
-        ):
-            operator_function = self._OPERATORS.get(
-                type(node.op)
-            )
-
-            if operator_function is None:
-                raise ValueError(
-                    "Unsupported unary operator."
-                )
-
-            value = self._evaluate(node.operand)
-
-            return operator_function(value)
-
-        raise ValueError(
-            "Only arithmetic expressions are allowed."
+        tree = ast.parse(
+            expression,
+            mode="eval",
         )
 
+        steps: list[str] = []
+        intermediate_values: list[float | int] = []
 
-_calculator = SafeCalculator()
+        def visit(node: ast.AST) -> float | int:
 
+            if isinstance(node, ast.Constant):
 
-def calculate(expression: str) -> float:
+                if isinstance(
+                    node.value,
+                    bool,
+                ) or not isinstance(
+                    node.value,
+                    (int, float),
+                ):
+                    raise ValueError(
+                        "Only numeric constants are allowed."
+                    )
+
+                return node.value
+
+            if isinstance(
+                node,
+                ast.UnaryOp,
+            ):
+
+                operator_type = type(node.op)
+
+                if operator_type not in _UNARY_OPERATORS:
+                    raise ValueError(
+                        "Unsupported unary operation."
+                    )
+
+                operand = visit(node.operand)
+
+                value = _UNARY_OPERATORS[
+                    operator_type
+                ](operand)
+
+                steps.append(
+                    f"{operand} -> {value}"
+                )
+
+                intermediate_values.append(
+                    value
+                )
+
+                return value
+
+            if isinstance(
+                node,
+                ast.BinOp,
+            ):
+
+                operator_type = type(node.op)
+
+                if operator_type not in _BINARY_OPERATORS:
+                    raise ValueError(
+                        "Unsupported operation."
+                    )
+
+                left = visit(node.left)
+                right = visit(node.right)
+
+                try:
+                    value = _BINARY_OPERATORS[
+                        operator_type
+                    ](
+                        left,
+                        right,
+                    )
+                except Exception as exc:
+                    raise ValueError(
+                        str(exc)
+                    ) from exc
+
+                symbols = {
+                    ast.Add: "+",
+                    ast.Sub: "-",
+                    ast.Mult: "*",
+                    ast.Div: "/",
+                    ast.FloorDiv: "//",
+                    ast.Mod: "%",
+                    ast.Pow: "**",
+                }
+
+                symbol = symbols[
+                    operator_type
+                ]
+
+                steps.append(
+                    f"{left} {symbol} {right} = {value}"
+                )
+
+                intermediate_values.append(
+                    value
+                )
+
+                return value
+
+            raise ValueError(
+                "Unsupported expression element: "
+                f"{type(node).__name__}"
+            )
+
+        result = visit(tree.body)
+
+        return (
+            result,
+            steps,
+            intermediate_values,
+        )
+def calculate(expression: str) -> float | int:
     """
-    Convenience function used by the tool registry.
+    Backward-compatible module-level calculator function.
     """
-
-    return _calculator.calculate(expression)
+    return SafeCalculator().calculate(expression)

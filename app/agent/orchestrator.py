@@ -1,4 +1,4 @@
-from app.agent.executor import AgentExecutor
+﻿from app.agent.executor import AgentExecutor
 from app.agent.planner import AgentPlanner
 from app.agent.state import AgentState
 from app.models.manager import ModelManager
@@ -7,10 +7,13 @@ from app.tools.calculator import SafeCalculator
 from app.tools.documents import DocumentTool
 from app.tools.pdf import PDFTool
 from app.tools.python import PythonTool
-from app.tools.registry import ToolRegistry
+from app.tools.registry import ToolRegistry, ToolCapability
 from app.tools.vision import VisionTool
 from app.tools.knowledge import KnowledgeTool
 from app.tools.artifact import ArtifactTool
+from app.security.workspace import TaskWorkspace
+from uuid import uuid4
+from app.tools.workspace import WorkspaceTool
 
 class AgentOrchestrator:
     def __init__(
@@ -60,10 +63,21 @@ class AgentOrchestrator:
                 "image_path is required when has_image=True."
             )
 
+        task_id = uuid4().hex
+
+        workspace = TaskWorkspace(
+            task_id=task_id
+        )
+
         state = AgentState(
             user_input=user_input,
             has_image=has_image,
             image_path=image_path,
+        )
+
+        state.metadata["task_id"] = task_id
+        state.metadata["workspace_root"] = str(
+            workspace.root
         )
 
         # Store local document path for the document tool.
@@ -83,7 +97,13 @@ class AgentOrchestrator:
         return self.executor.execute(state)
     
     def _create_default_registry(self):
-        registry = ToolRegistry()
+        registry = ToolRegistry(
+            allowed_capabilities={
+                ToolCapability.READ,
+                ToolCapability.WRITE,
+                ToolCapability.EXECUTE,
+            }
+        )
 
         # ---------------------------------------------------------
         # Calculator
@@ -182,4 +202,35 @@ class AgentOrchestrator:
             ),
             function=artifact.execute,
         )
+
+        workspace = WorkspaceTool()
+
+        registry.register(
+            name="read_file",
+            description="Reads a file strictly inside the current task workspace.",
+            function=workspace.read_file,
+            capabilities={ToolCapability.READ},
+        )
+
+        registry.register(
+            name="write_file",
+            description="Writes a file strictly inside the current task workspace.",
+            function=workspace.write_file,
+            capabilities={ToolCapability.WRITE},
+        )
+
+        registry.register(
+            name="list_files",
+            description="Lists files strictly inside the current task workspace.",
+            function=workspace.list_files,
+            capabilities={ToolCapability.READ},
+        )
+
+        registry.register(
+            name="create_directory",
+            description="Creates a directory strictly inside the current task workspace.",
+            function=workspace.create_directory,
+            capabilities={ToolCapability.WRITE},
+        )
         return registry
+

@@ -1,10 +1,10 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-
+from contextlib import nullcontext
 
 @dataclass
 class SandboxResult:
@@ -40,11 +40,18 @@ class PythonSandbox:
         self.memory = memory
         self.cpus = cpus
 
-    def execute(self, code: str) -> SandboxResult:
+    def execute(self, code: str, workspace_root=None) -> SandboxResult:
         if not code or not code.strip():
             raise ValueError("Code cannot be empty.")
 
-        with tempfile.TemporaryDirectory() as tmp:
+        workspace_context = None
+
+        if workspace_root:
+            workspace_context = nullcontext(Path(workspace_root))
+        else:
+            workspace_context = tempfile.TemporaryDirectory()
+
+        with workspace_context as tmp:
             workdir = Path(tmp)
             script = workdir / "main.py"
             script.write_text(code, encoding="utf-8")
@@ -99,3 +106,5 @@ class PythonSandbox:
                     return_code=-1,
                     timed_out=True,
                 )
+
+

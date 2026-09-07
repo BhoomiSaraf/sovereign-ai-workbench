@@ -1,4 +1,4 @@
-from app.agent.state import AgentState
+﻿from app.agent.state import AgentState
 from app.agent.tool_selector import ToolSelector
 from app.models.manager import ModelManager
 from app.multimodal.page_selector import SemanticPageSelector
@@ -36,10 +36,14 @@ class AgentExecutor:
     ) -> AgentState:
 
         try:
-            plan = state.metadata.get("plan", [])
 
-            # Backward-compatible fallback for callers that do not
-            # provide a planner-generated plan.
+            plan = list(
+                state.metadata.get(
+                    "plan",
+                    [],
+                )
+            )
+
             if not plan:
                 plan = [
                     "analyze_task",
@@ -47,10 +51,20 @@ class AgentExecutor:
                     "generate_response",
                 ]
 
-                state.metadata["plan"] = plan
+            # Keep the planner's original plan unchanged.
+            state.metadata["plan"] = list(plan)
 
-            # Mark that execution is being driven by the planner.
-            state.metadata["execution_mode"] = "plan_driven"
+            # Validation is an execution-stage requirement,
+            # not part of the planner's original plan.
+            execution_plan = list(plan)
+
+            if "validate" not in execution_plan:
+                execution_plan.append("validate")
+            state.metadata["execution_mode"] = (
+                "iterative_plan_driven"
+            )
+
+            state.status = "planning"
 
             state.add_event(
                 "plan",
@@ -58,23 +72,39 @@ class AgentExecutor:
                 steps=list(plan),
             )
 
-            # --------------------------------------------------
-            # PLAN-DRIVEN EXECUTION
-            # --------------------------------------------------
+            remaining = list(execution_plan)
 
-            for step in list(plan):
+            while remaining:
+
+                if not state.begin_iteration():
+                    state.status = "failed"
+                    state.error = (
+                        "Maximum agent iterations exceeded."
+                    )
+
+                    state.add_event(
+                        "execution",
+                        "error",
+                        error=state.error,
+                    )
+
+                    return state
+
+                step = remaining[0]
 
                 state.current_step = step
+                state.status = "acting"
 
                 state.add_event(
                     "step",
                     "start",
                     step=step,
+                    iteration=state.iteration,
                 )
 
-                # Avoid executing a step twice if the workflow
-                # is resumed or re-planned.
                 if step in state.completed_steps:
+
+                    remaining.pop(0)
 
                     state.add_event(
                         "step",
@@ -85,247 +115,140 @@ class AgentExecutor:
 
                     continue
 
-                # --------------------------------------------------
-                # TASK ANALYSIS
-                # --------------------------------------------------
+                try:
 
-                if step == "analyze_task":
+                    self._dispatch_step(
+                        state,
+                        step,
+                    )
 
-                    # AgentPlanner has already analyzed the task
-                    # before execution begins.
+                except Exception as exc:
+
+                    state.mark_step_failed(step)
+
+                    state.observe(
+                        step,
+                        False,
+                        error=str(exc),
+                    )
+
                     state.add_event(
-                        "observation",
-                        "complete",
+                        "decision",
+                        "failure",
                         step=step,
-                        requirements=state.task_requirements,
+                        error=str(exc),
                     )
 
-                # --------------------------------------------------
-                # MODEL ROUTING
-                # --------------------------------------------------
-
-                elif step == "route_model":
-
-                    self._execute_routing(state)
-
-                    # Tool selection happens immediately after
-                    # model routing because tool selection depends
-                    # on the task requirements.
-                    self._select_tools(state)
-
-                # --------------------------------------------------
-                # DOCUMENT PROCESSING
-                # --------------------------------------------------
-
-                elif step == "process_document":
-
-                    if self._should_process_document(state):
-
-                        self._execute_document_processing(
-                            state
-                        )
-
-                    else:
+                    if self._decide_recovery(
+                        state,
+                        step,
+                        str(exc),
+                    ):
 
                         state.add_event(
-                            "step",
-                            "skipped",
-                            step=step,
-                            reason=(
-                                "Document processing not required "
-                                "or no file supplied."
+                            "replan",
+                            "recovery",
+                            failed_step=step,
+                            remaining_steps=list(
+                                remaining
                             ),
                         )
 
+                        continue
+
+                    raise
+
                 # --------------------------------------------------
-                # VISION
+                # OBSERVE
                 # --------------------------------------------------
 
-                elif step == "analyze_image":
+                success = self._step_succeeded(
+                    state,
+                    step,
+                )
 
-                    if self._should_analyze_image(state):
+                state.observe(
+                    step,
+                    success,
+                )
 
-                        self._execute_vision(state)
+                # --------------------------------------------------
+                # DECIDE
+                # --------------------------------------------------
 
-                    else:
+                if not success:
 
-                        state.add_event(
-                            "step",
-                            "skipped",
-                            step=step,
-                            reason=(
-                                "Vision analysis not required "
-                                "or no usable image is available."
-                            ),
+                    state.mark_step_failed(step)
+
+                    if self._decide_recovery(
+                        state,
+                        step,
+                        self._step_error(
+                            state,
+                            step,
+                        ),
+                    ):
+                        continue
+
+                    raise RuntimeError(
+                        self._step_error(
+                            state,
+                            step,
                         )
-
-                # --------------------------------------------------
-                # KNOWLEDGE / RAG
-                # --------------------------------------------------
-
-                elif step == "search_knowledge":
-
-                    if self._should_search_knowledge(state):
-
-                        self._execute_knowledge_search(
-                            state
-                        )
-
-                    else:
-
-                        state.add_event(
-                            "step",
-                            "skipped",
-                            step=step,
-                            reason="Knowledge search not required.",
-                        )
-
-                # --------------------------------------------------
-                # CALCULATOR
-                # --------------------------------------------------
-
-                elif step == "calculator":
-
-                    if self._should_calculate(state):
-
-                        self._execute_calculator(state)
-
-                        # Preserve the existing calculator-only
-                        # behavior: do not call the language model
-                        # when the user's task is only a calculation.
-                        if self._is_calculation_only(state):
-
-                            state.response = str(
-                                state.tool_results["calculator"]
-                            )
-
-                            state.evidence.setdefault(
-                                "inference",
-                                [],
-                            ).append(
-                                {
-                                    "conclusion": state.response,
-                                    "supporting_evidence": {
-                                        "document": len(
-                                            state.evidence.get(
-                                                "document",
-                                                [],
-                                            )
-                                        ),
-                                        "vision": len(
-                                            state.evidence.get(
-                                                "vision",
-                                                [],
-                                            )
-                                        ),
-                                        "knowledge": len(
-                                            state.evidence.get(
-                                                "knowledge",
-                                                [],
-                                            )
-                                        ),
-                                    },
-                                }
-                            )
-
-                            self._complete_step(
-                                state,
-                                step,
-                            )
-
-                            state.completed = True
-                            state.current_step = None
-
-                            state.add_event(
-                                "execution",
-                                "complete",
-                                terminal_tool="calculator",
-                            )
-
-                            return state
-
-                    else:
-
-                        state.add_event(
-                            "step",
-                            "skipped",
-                            step=step,
-                            reason="Calculation not required.",
-                        )
-
-                # --------------------------------------------------
-                # PYTHON SANDBOX
-                # --------------------------------------------------
-
-                elif step == "python":
-
-                    if self._should_execute_python(state):
-
-                        self._execute_python(state)
-
-                    else:
-
-                        state.add_event(
-                            "step",
-                            "skipped",
-                            step=step,
-                            reason="Python execution not required.",
-                        )
-
-                # --------------------------------------------------
-                # RESPONSE GENERATION
-                # --------------------------------------------------
-
-                elif step == "generate_response":
-
-                    self._generate_response(state)
-
-                # --------------------------------------------------
-                # ARTIFACT GENERATION
-                # --------------------------------------------------
-
-                elif step == "generate_artifact":
-
-                    if self._should_generate_artifact(state):
-
-                        self._execute_artifact(state)
-
-                    else:
-
-                        state.add_event(
-                            "step",
-                            "skipped",
-                            step=step,
-                            reason="Artifact generation not required.",
-                        )
-
-                # --------------------------------------------------
-                # UNKNOWN STEP
-                # --------------------------------------------------
-
-                else:
-
-                    raise ValueError(
-                        f"Unknown agent plan step: {step}"
                     )
 
-                # Record successful completion.
+                state.mark_step_complete(step)
+
                 self._complete_step(
                     state,
                     step,
                 )
 
-                # Observe current progress and calculate the
-                # remaining work.
-                self._replan_remaining(
-                    state
+                state.decision = "continue"
+                # A calculation-only request already has its final answer.
+                # Skip unnecessary LLM response generation, but still run
+                # the mandatory validation stage.
+                if (
+                    step == "calculator"
+                    and self._is_calculation_only(state)
+                ):
+                    remaining = ["validate"]
+                else:
+                    remaining = [
+                        item
+                        for item in remaining[1:]
+                        if item
+                        not in state.completed_steps
+                    ]
+                
+
+                state.metadata[
+                    "remaining_plan"
+                ] = list(remaining)
+
+                state.add_event(
+                    "decision",
+                    "continue",
+                    completed_step=step,
+                    remaining_steps=list(
+                        remaining
+                    ),
                 )
 
-            # --------------------------------------------------
-            # WORKFLOW COMPLETE
-            # --------------------------------------------------
+                state.add_event(
+                    "replan",
+                    "complete",
+                    remaining_steps=list(
+                        remaining
+                    ),
+                )
+
+            # ------------------------------------------------------
+            # FINISH
+            # ------------------------------------------------------
 
             state.current_step = None
+            state.status = "completed"
             state.completed = True
 
             state.add_event(
@@ -339,6 +262,7 @@ class AgentExecutor:
             state.add_event(
                 "execution",
                 "complete",
+                iterations=state.iteration,
             )
 
             return state
@@ -346,6 +270,7 @@ class AgentExecutor:
         except Exception as exc:
 
             state.current_step = None
+            state.status = "failed"
             state.error = str(exc)
             state.completed = False
 
@@ -353,11 +278,545 @@ class AgentExecutor:
                 "execution",
                 "error",
                 error=str(exc),
+                iteration=state.iteration,
             )
 
             return state
 
+    def _dispatch_step(
+        self,
+        state: AgentState,
+        step: str,
+    ) -> None:
+
+        if step == "analyze_task":
+
+            state.add_event(
+                "observation",
+                "complete",
+                step=step,
+                requirements=state.task_requirements,
+            )
+
+        elif step == "route_model":
+
+            self._execute_routing(state)
+            self._select_tools(state)
+
+        elif step == "process_document":
+
+            if self._should_process_document(state):
+                self._execute_document_processing(state)
+            else:
+                state.add_event(
+                    "step",
+                    "skipped",
+                    step=step,
+                    reason="Document processing not required.",
+                )
+
+        elif step == "analyze_image":
+
+            if self._should_analyze_image(state):
+                self._execute_vision(state)
+            else:
+                state.add_event(
+                    "step",
+                    "skipped",
+                    step=step,
+                    reason="Vision analysis not required.",
+                )
+
+        elif step == "search_knowledge":
+
+            if self._should_search_knowledge(state):
+                self._execute_knowledge_search(state)
+            else:
+                state.add_event(
+                    "step",
+                    "skipped",
+                    step=step,
+                    reason="Knowledge search not required.",
+                )
+
+        elif step == "calculator":
+
+            if self._should_calculate(state):
+
+                self._execute_calculator(state)
+
+                if self._is_calculation_only(state):
+
+                    result = state.tool_results[
+                        "calculator"
+                    ]
+
+                    if hasattr(result, "result"):
+                        state.response = str(
+                            result.result
+                        )
+                    else:
+                        state.response = str(result)
+
+                    state.metadata[
+                        "tool_result"
+                    ] = (
+                        result.result
+                        if hasattr(result, "result")
+                        else result
+                    )
+
+                    state.evidence.setdefault(
+                        "inference",
+                        [],
+                    ).append(
+                        {
+                            "conclusion": state.response,
+                            "supporting_evidence": {},
+                        }
+                    )
+
+            else:
+                state.add_event(
+                    "step",
+                    "skipped",
+                    step=step,
+                    reason="Calculation not required.",
+                )
+
+        elif step == "code_execution":
+
+            if self._should_execute_code(state):
+                self._execute_code(state)
+            else:
+                state.add_event(
+                    "step",
+                    "skipped",
+                    step=step,
+                    reason="Code execution not required.",
+                )
+
+        elif step == "generate_response":
+
+            self._generate_response(state)
+
+        elif step == "generate_artifact":
+
+            if self._should_generate_artifact(state):
+                self._execute_artifact(state)
+            else:
+                state.add_event(
+                    "step",
+                    "skipped",
+                    step=step,
+                    reason="Artifact generation not required.",
+                )
+
+        elif step == "validate":
+
+            self._validate_final_state(state)
+
+        else:
+
+            raise ValueError(
+                f"Unknown agent plan step: {step}"
+            )
+
+    def _step_succeeded(
+        self,
+        state: AgentState,
+        step: str,
+    ) -> bool:
+
+        if step == "code_execution":
+
+            result = state.tool_results.get(
+                "code_execution"
+            )
+
+            if result is None:
+                return False
+
+            if hasattr(result, "get"):
+                return bool(
+                    result.get(
+                        "success",
+                        False,
+                    )
+                )
+
+            return bool(result)
+
+        if step == "validate":
+            return bool(
+                state.validation.get(
+                    "valid",
+                    False,
+                )
+            )
+
+        return True
+
+    def _step_error(
+        self,
+        state: AgentState,
+        step: str,
+    ) -> str:
+
+        result = state.tool_results.get(
+            step
+        )
+
+        if hasattr(result, "get"):
+
+            return str(
+                result.get(
+                    "error"
+                )
+                or result.get(
+                    "stderr"
+                )
+                or "Tool execution failed."
+            )
+
+        return (
+            state.error
+            or f"{step} failed."
+        )
+
+    def _decide_recovery(
+        self,
+        state: AgentState,
+        step: str,
+        error: str,
+    ) -> bool:
+
+        # Code execution gets an explicit repair loop.
+        # Python is the first supported runtime.
+        if step == "code_execution":
+
+            if state.can_retry(
+                "code_repair",
+                limit=2,
+            ):
+
+                state.mark_step_failed(
+                    "code_repair"
+                )
+
+                self._repair_python(
+                    state,
+                    error,
+                )
+
+                return True
+
+        # Artifact generation can be retried once.
+        if step == "generate_artifact":
+
+            if state.can_retry(
+                "artifact",
+                limit=1,
+            ):
+
+                state.mark_step_failed(
+                    "artifact"
+                )
+
+                state.completed_steps = [
+                    item
+                    for item in state.completed_steps
+                    if item != "generate_artifact"
+                ]
+
+                return True
+
+        # Response generation can be retried once.
+        if step == "generate_response":
+
+            if state.can_retry(
+                "response",
+                limit=1,
+            ):
+
+                state.mark_step_failed(
+                    "response"
+                )
+
+                return True
+
+        return False
+
     # ==========================================================
+    # ITERATIVE PYTHON EXECUTION
+    # ==========================================================
+
+    def _execute_python_iterative(
+        self,
+        state: AgentState,
+    ) -> None:
+
+        code = state.metadata.get(
+            "code"
+        )
+
+        if not code:
+
+            code = self._generate_python_code(
+                state
+            )
+
+            state.metadata[
+                "code"
+            ] = code
+
+            state.add_event(
+                "code_generation",
+                "complete",
+            )
+
+        task_id = state.metadata.get(
+            "task_id"
+        )
+
+        workspace_root = state.metadata.get(
+            "workspace_root"
+        )
+
+        result = self.tool_registry.execute(
+            "python",
+            code=code,
+            task_id=task_id,
+            workspace_root=workspace_root,
+        )
+
+        state.tool_results[
+            "python"
+        ] = result
+
+        # Generic execution result used by the planner/executor
+        # state machine. Keep the Python key for compatibility
+        # with existing tests and prompt construction.
+        state.tool_results[
+            "code_execution"
+        ] = result
+
+        if hasattr(result, "get"):
+            success = result.get(
+                "success",
+                False,
+            )
+            error = result.get(
+                "error"
+            ) or result.get(
+                "stderr"
+            )
+        else:
+            success = bool(result)
+            error = None
+
+        state.add_event(
+            "tool",
+            "complete" if success else "failed",
+            tool="code_execution",
+            runtime="python",
+            success=success,
+            error=error,
+        )
+
+    def _generate_python_code(
+        self,
+        state: AgentState,
+    ) -> str:
+
+        model = get_model_by_name(
+            state.selected_model
+        )
+
+        prompt = f"""
+You are the local coding agent inside a sovereign,
+air-gapped AI workbench.
+
+Generate Python code that solves the user's task.
+
+USER REQUEST:
+{state.user_input}
+
+RULES:
+- Return ONLY executable Python code.
+- Do not use markdown fences.
+- Do not access the network.
+- Do not access files outside /workspace.
+- Use standard Python libraries unless the task explicitly
+  requires something already available locally.
+- Print the important final result.
+- Keep the program deterministic.
+
+The program will be executed inside a restricted sandbox.
+"""
+
+        code = self.model_manager.generate(
+            model=model,
+            prompt=prompt,
+        )
+
+        return self._clean_generated_code(
+            code
+        )
+
+    def _repair_python(
+        self,
+        state: AgentState,
+        error: str,
+    ) -> None:
+
+        old_code = state.metadata.get(
+            "code",
+            "",
+        )
+
+        model = get_model_by_name(
+            state.selected_model
+        )
+
+        prompt = f"""
+You are repairing Python code inside a sovereign,
+air-gapped AI workbench.
+
+USER REQUEST:
+{state.user_input}
+
+CURRENT CODE:
+{old_code}
+
+EXECUTION ERROR:
+{error}
+
+TASK:
+Return corrected Python code that solves the original
+request and fixes the execution error.
+
+RULES:
+- Return ONLY executable Python code.
+- Do not use markdown fences.
+- Do not use network access.
+- Do not access files outside /workspace.
+- Preserve correct parts of the existing solution.
+- Make the smallest reliable correction.
+- Print the important final result.
+"""
+
+        repaired = self.model_manager.generate(
+            model=model,
+            prompt=prompt,
+        )
+
+        state.metadata[
+            "code"
+        ] = self._clean_generated_code(
+            repaired
+        )
+
+        state.add_event(
+            "decision",
+            "repair",
+            reason="Code execution failed.",
+            runtime="python",
+            repair_attempt=state.retry_counts.get(
+                "code_repair",
+                0,
+            ),
+        )
+
+        # Remove the failed generic code-execution step so it
+        # is executed again on the next iteration.
+        state.completed_steps = [
+            item
+            for item in state.completed_steps
+            if item != "code_execution"
+        ]
+
+    @staticmethod
+    def _clean_generated_code(
+        code: str,
+    ) -> str:
+
+        text = str(code).strip()
+
+        if text.startswith(
+            "```python"
+        ):
+            text = text[
+                len("```python"):
+            ]
+
+        elif text.startswith(
+            "```"
+        ):
+            text = text[
+                len("```"):
+            ]
+
+        if text.endswith(
+            "```"
+        ):
+            text = text[:-3]
+
+        return text.strip()
+
+    # ==========================================================
+    # FINAL VALIDATION
+    # ==========================================================
+
+    def _validate_final_state(
+        self,
+        state: AgentState,
+    ) -> None:
+
+        from app.agent.validator import (
+            AgentValidator,
+        )
+
+        validator = AgentValidator()
+
+        validation = validator.validate(
+            state
+        )
+
+        state.validation = validation
+
+        state.add_event(
+            "validation",
+            "complete" if validation[
+                "valid"
+            ] else "failed",
+            validation=validation,
+        )
+
+        if not validation["valid"]:
+
+            # A Python failure should be handled by the
+            # iterative recovery loop.
+            code_result = validation.get(
+                "code",
+                {},
+            )
+
+            if not code_result.get(
+                "success",
+                True,
+            ):
+
+                raise RuntimeError(
+                    code_result.get(
+                        "message",
+                        "Code validation failed.",
+                    )
+                )
+
+            raise RuntimeError(
+                "Final validation failed."
+            )    # ==========================================================
     # AGENT EXECUTION PROGRESS
     # ==========================================================
 
@@ -1115,6 +1574,17 @@ class AgentExecutor:
         state: AgentState,
     ) -> bool:
 
+        requirements = state.task_requirements
+
+        code_execution_required = (
+            requirements.get(
+                "code_execution_required",
+                False,
+            )
+            if isinstance(requirements, dict)
+            else False
+        )
+
         return (
             self._has_selected_tool(
                 state,
@@ -1128,14 +1598,60 @@ class AgentExecutor:
                 state,
                 "knowledge_search",
             )
-            and not self._has_selected_tool(
-                state,
-                "python",
-            )
+            and not code_execution_required
             and not self._has_selected_tool(
                 state,
                 "documents",
             )
+        )
+
+    # ==========================================================
+    # CODE EXECUTION
+    # ==========================================================
+
+    def _should_execute_code(
+        self,
+        state: AgentState,
+    ) -> bool:
+
+        requirements = state.task_requirements
+
+        if not isinstance(requirements, dict):
+            return False
+
+        return bool(
+            requirements.get(
+                "code_execution_required",
+                False,
+            )
+        )
+
+    def _execute_code(
+        self,
+        state: AgentState,
+    ) -> None:
+
+        requirements = state.task_requirements
+
+        if not isinstance(requirements, dict):
+            raise RuntimeError(
+                "Code execution requirements are unavailable."
+            )
+
+        language = (
+            requirements.get("code_language")
+            or "python"
+        ).lower()
+
+        state.metadata["code_language"] = language
+
+        if language == "python":
+            self._execute_python_iterative(state)
+            return
+
+        raise RuntimeError(
+            f"Code execution runtime '{language}' "
+            "is not available in the current MVP."
         )
 
     # ==========================================================
@@ -1592,6 +2108,20 @@ class AgentExecutor:
                     str(
                         state.tool_results[
                             "python"
+                        ]
+                    ),
+                ]
+            )
+
+        if "code_execution" in state.tool_results:
+
+            sections.extend(
+                [
+                    "",
+                    "CODE EXECUTION RESULT:",
+                    str(
+                        state.tool_results[
+                            "code_execution"
                         ]
                     ),
                 ]

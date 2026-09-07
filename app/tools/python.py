@@ -1,49 +1,85 @@
-from __future__ import annotations
-
-from app.security.sandbox import PythonSandbox
+﻿from app.security.sandbox import PythonSandbox
+from app.tools.result import ToolResult
 
 
 class PythonTool:
+
     name = "python"
 
-    def __init__(self, sandbox: PythonSandbox | None = None):
-        self.sandbox = sandbox or PythonSandbox()
-
-    def execute(self, code: str) -> dict:
-        result = self.sandbox.execute(code)
-
-        return {
-            "success": result.success,
-            "stdout": result.stdout,
-            "stderr": result.stderr,
-            "return_code": result.return_code,
-            "timed_out": result.timed_out,
-        }
-
-
-class _PythonRepl:
-    """
-    Compatibility interface for callers expecting a tool with
-    an .invoke({"code": ...}) method.
-
-    Execution still uses the existing PythonTool and PythonSandbox.
-    """
-
-    def invoke(self, arguments: dict) -> str:
-        code = arguments.get("code")
-
-        if not code:
-            raise ValueError("code is required.")
-
-        result = PythonTool().execute(code)
-
-        if result["success"]:
-            return result["stdout"]
-
-        return result["stderr"] or (
-            f"Execution failed with return code "
-            f"{result['return_code']}"
+    def __init__(
+        self,
+        sandbox=None,
+    ):
+        self.sandbox = (
+            sandbox
+            or PythonSandbox()
         )
 
+    def execute(
+        self,
+        code: str,
+        task_id: str | None = None,
+        workspace_root: str | None = None,
+    ) -> ToolResult:
 
-python_repl = _PythonRepl()
+        try:
+
+            result = self.sandbox.execute(
+                code,
+                workspace_root=workspace_root,
+            )
+
+            return ToolResult(
+                success=result.success,
+                result=result.stdout,
+                error=(
+                    result.stderr
+                    if not result.success
+                    else None
+                ),
+                metadata={
+                    "return_code": result.return_code,
+                    "timed_out": result.timed_out,
+                    "task_id": task_id,
+                    "workspace_root": workspace_root,
+                    "stderr": result.stderr,
+                    "stdout": result.stdout,
+                },
+            )
+
+        except Exception as exc:
+
+            return ToolResult(
+                success=False,
+                result=None,
+                error=str(exc),
+                metadata={
+                    "task_id": task_id,
+                    "workspace_root": workspace_root,
+                },
+            )
+
+
+class _PythonReplCompatibility:
+
+    def __init__(
+        self,
+        tool=None,
+    ):
+        self.tool = tool or PythonTool()
+
+    def invoke(
+        self,
+        payload,
+    ):
+        result = self.tool.execute(
+            payload.get("code", "")
+        )
+
+        if result.success:
+            return result.result or ""
+
+        return result.error or ""
+
+
+python_repl = _PythonReplCompatibility()

@@ -56,8 +56,8 @@ class AgentPlanner:
         if requirements["calculator_required"]:
             steps.append("calculator")
 
-        if requirements["python_required"]:
-            steps.append("python")
+        if requirements["code_execution_required"]:
+            steps.append("code_execution")
 
         steps.append("generate_response")
 
@@ -73,8 +73,6 @@ class AgentPlanner:
         self,
         state: AgentState,
     ) -> Dict[str, Any]:
-
-        text = state.user_input.lower()
 
         document_required = bool(
             state.metadata.get("file_path")
@@ -94,7 +92,7 @@ class AgentPlanner:
             state.user_input
         )
 
-        python_required = self._requires_python(
+        code_requirements = self._analyze_code_requirements(
             state.user_input
         )
 
@@ -107,7 +105,11 @@ class AgentPlanner:
             "vision_required": vision_required,
             "rag_required": rag_required,
             "calculator_required": calculator_required,
-            "python_required": python_required,
+            "code_required": code_requirements["code_required"],
+            "code_execution_required": (
+                code_requirements["execution_required"]
+            ),
+            "code_language": code_requirements["language"],
             "artifact_required": artifact_required,
             "artifact_type": (
                 "docx"
@@ -183,27 +185,111 @@ class AgentPlanner:
             )
         )
 
-    def _requires_python(
+    def _analyze_code_requirements(
         self,
         text: str,
-    ) -> bool:
+    ) -> Dict[str, Any]:
 
         text_lower = text.lower()
 
-        execution_terms = [
-            "run code",
-            "execute code",
-            "test code",
-            "debug code",
-            "run this",
-            "execute this",
-            "unit test",
+        code_terms = [
+            "code",
+            "program",
+            "script",
+            "source code",
+            "function",
+            "algorithm",
         ]
 
-        return any(
+        execution_phrases = [
+        "run code",
+        "execute code",
+        "test code",
+        "debug code",
+        "run this",
+        "execute this",
+        "test this",
+        "debug this",
+        "run and execute",
+        "write and execute",
+        "write and run",
+        "create and execute",
+        "create and run",
+        "run the code",
+        "execute the code",
+        "test the code",
+        "debug the code",
+        "run the program",
+        "execute the program",
+        "test the program",
+        "debug the program",
+        "run the script",
+        "execute the script",
+        "test the script",
+        "debug the script",
+        "compile and run",
+        "compile and test",
+    ]
+        code_required = any(
             term in text_lower
-            for term in execution_terms
+            for term in code_terms
         )
+
+        execution_required = any(
+            phrase in text_lower
+            for phrase in execution_phrases
+        )
+
+        language = self._detect_code_language(
+            text_lower
+        )
+
+        return {
+            "code_required": code_required,
+            "execution_required": execution_required,
+            "language": language,
+        }
+
+    def _detect_code_language(
+        self,
+        text: str,
+    ) -> str | None:
+
+        language_aliases = {
+            "python": [
+                "python",
+                "python 3",
+                ".py",
+            ],
+            "javascript": [
+                "javascript",
+                "js",
+                "node.js",
+                "nodejs",
+            ],
+            "typescript": [
+                "typescript",
+                "ts",
+            ],
+            "cpp": [
+                "c++",
+                "cpp",
+            ],
+            "c": [
+                "c program",
+                "c language",
+            ],
+            "java": [
+                "java program",
+                "java code",
+            ],
+        }
+
+        for language, aliases in language_aliases.items():
+            if any(alias in text for alias in aliases):
+                return language
+
+        return None
 
     def _requires_artifact(
         self,
@@ -229,6 +315,6 @@ class AgentPlanner:
         ]
 
         return any(
-            term in text_lower
-            for term in artifact_terms
+            phrase in text_lower
+            for phrase in artifact_terms
         )
