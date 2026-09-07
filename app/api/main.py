@@ -1,5 +1,7 @@
 from fastapi import FastAPI
 
+from app.api.artifacts import router as artifacts_router
+from app.api.audit import router as audit_router
 from app.api.chat import router as chat_router
 from app.api.files import router as files_router
 from app.api.knowledge import router as knowledge_router
@@ -22,6 +24,8 @@ app.include_router(knowledge_router)
 app.include_router(models_router)
 app.include_router(tasks_router)
 app.include_router(chat_router)
+app.include_router(artifacts_router)
+app.include_router(audit_router)
 
 
 @app.get("/health")

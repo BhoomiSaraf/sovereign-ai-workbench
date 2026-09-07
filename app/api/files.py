@@ -22,11 +22,19 @@ UPLOAD_DIRECTORY.mkdir(
 )
 
 
-ALLOWED_EXTENSIONS = {
+DOCUMENT_EXTENSIONS = {
     ".pdf",
     ".docx",
     ".txt",
 }
+
+IMAGE_EXTENSIONS = {
+    ".png",
+    ".jpg",
+    ".jpeg",
+}
+
+ALLOWED_EXTENSIONS = DOCUMENT_EXTENSIONS | IMAGE_EXTENSIONS
 
 
 @router.post("/upload")
@@ -34,8 +42,11 @@ async def upload_file(
     file: UploadFile = File(...),
 ):
     """
-    Upload a document and ingest it into the
-    local sovereign knowledge base.
+    Upload a local document or image.
+
+    Documents (PDF/DOCX/TXT) are ingested into the local
+    sovereign knowledge base. Images are stored for use as
+    task attachments (vision analysis) and are not text-ingested.
     """
 
     if not file.filename:
@@ -78,6 +89,21 @@ async def upload_file(
     destination.write_bytes(
         content
     )
+
+    if extension in IMAGE_EXTENSIONS:
+        return {
+            "status": "success",
+            "file_id": file_id,
+            "filename": file.filename,
+            "ingestion": {
+                "status": "skipped",
+                "reason": (
+                    "Images are not ingested into the text "
+                    "knowledge base; attach them to a task for "
+                    "vision analysis instead."
+                ),
+            },
+        }
 
     try:
         ingester = KnowledgeIngester()
