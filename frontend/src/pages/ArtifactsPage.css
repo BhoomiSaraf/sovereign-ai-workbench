@@ -1,62 +1,174 @@
-.artifacts-note {
-  color: var(--text-dim);
-  font-size: 12.5px;
-  max-width: 720px;
-  margin: 8px 0 18px;
+.artifacts-page {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.artifacts-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+.artifacts-desc {
+  max-width: 680px;
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.artifacts-desc code {
+  color: var(--sovereign-teal);
+  background: var(--bg-panel-raised);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+/* Filter Chips */
+.filter-chips {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.filter-chip {
+  background: var(--bg-panel-raised);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 6px 12px;
+  border-radius: 20px;
+  transition: all 0.15s ease;
+}
+
+.filter-chip:hover {
+  background: var(--bg-panel-hover);
+  color: var(--text-primary);
+}
+
+.filter-chip.active {
+  background: var(--sovereign-teal-glow);
+  color: var(--sovereign-teal);
+  border-color: rgba(0, 210, 180, 0.4);
+  font-weight: 600;
 }
 
 .artifacts-loading {
   display: flex;
   align-items: center;
-  gap: 8px;
-  color: var(--text-dim);
-  font-size: 13px;
+  gap: 10px;
+  padding: 24px;
+  color: var(--text-secondary);
 }
 
-.artifacts-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 13px;
+/* Artifacts Grid */
+.artifacts-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 18px;
 }
 
-.artifacts-table th {
-  text-align: left;
+.artifact-item-card {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  box-shadow: var(--shadow-sm);
+  transition: all 0.2s ease;
+}
+
+.artifact-item-card:hover {
+  border-color: var(--border-medium);
+  transform: translateY(-2px);
+}
+
+.artifact-item-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.artifact-item-icon {
+  font-size: 28px;
+}
+
+.artifact-item-meta {
+  flex: 1;
+}
+
+.artifact-item-name {
+  display: block;
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--text-primary);
+  font-family: var(--font-heading);
+  word-break: break-all;
+}
+
+.artifact-item-sub {
   font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-  color: var(--text-dim);
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--border);
+  color: var(--sovereign-teal);
 }
 
-.artifacts-table td {
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--border);
+.artifact-item-details {
+  border-top: 1px solid var(--border-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+  padding: 10px 0;
+  margin-bottom: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
-.mono {
-  font-family: var(--mono);
-  font-size: 12px;
+.detail-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
 }
 
-.path-cell {
-  color: var(--text-dim);
-  max-width: 320px;
+.detail-label {
+  color: var(--text-muted);
+}
+
+.detail-task {
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+}
+
+.detail-path {
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  font-size: 10px;
+  max-width: 180px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.download-btn {
-  display: inline-block;
-  background: var(--bg-panel-raised);
-  border: 1px solid var(--border);
-  color: var(--accent);
-  border-radius: 6px;
-  padding: 5px 12px;
+.artifact-download-btn {
+  display: block;
+  width: 100%;
+  text-align: center;
+  background: var(--sovereign-teal);
+  color: var(--btn-text-on-teal);
+  font-weight: 700;
   font-size: 12px;
+  padding: 8px 12px;
+  border-radius: 6px;
   text-decoration: none;
+  transition: all 0.15s ease;
 }
-.download-btn:hover {
-  border-color: var(--accent);
+
+.artifact-download-btn:hover {
+  background: var(--btn-hover-teal);
+  text-decoration: none;
+  color: var(--btn-text-on-teal);
 }

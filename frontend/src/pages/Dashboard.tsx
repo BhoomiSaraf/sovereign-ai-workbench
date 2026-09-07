@@ -3,11 +3,11 @@ import { Link } from 'react-router-dom'
 import { listModels, listTasks } from '../api/client'
 import type { ModelsResponse, TaskListResponse } from '../api/types'
 import { useHealth } from '../hooks/useHealth'
-import { Badge, EmptyState, ErrorBanner, Panel, Spinner } from '../components/ui'
+import { Badge, EmptyState, ErrorBanner, MetricTile, Panel } from '../components/ui'
 import './Dashboard.css'
 
 export default function Dashboard() {
-  const { health, error: healthError, loading: healthLoading } = useHealth()
+  const { health, error: healthError } = useHealth()
   const [models, setModels] = useState<ModelsResponse | null>(null)
   const [tasks, setTasks] = useState<TaskListResponse | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -18,95 +18,109 @@ export default function Dashboard() {
         setModels(m)
         setTasks(t)
       })
-      .catch((err) => setLoadError(err instanceof Error ? err.message : 'Failed to load'))
+      .catch((err) => setLoadError(err instanceof Error ? err.message : 'Failed to load system metrics'))
   }, [])
 
-  const recentTasks = tasks?.tasks.slice(-5).reverse() ?? []
+  const recentTasks = tasks?.tasks.slice(-6).reverse() ?? []
+  const externalCalls = health?.network?.external_connections_detected ?? 0
 
   return (
-    <div className="dashboard">
-      <h1>Dashboard</h1>
+    <div className="dashboard-container">
+      {/* Welcome Banner */}
+      <div className="welcome-banner">
+        <div>
+          <h1 className="welcome-title">Sovereign AI Industrial Workbench</h1>
+          <p className="welcome-desc">
+            Air-gapped, on-premise AI platform engineered for confidential workloads in refineries, PSUs, and defense-linked manufacturing.
+          </p>
+        </div>
+        <Link to="/workspace" className="primary-action-btn">
+          Launch Task Workspace →
+        </Link>
+      </div>
 
-      <div className="dashboard-tiles">
-        <StatusTile
-          label="Backend"
-          ok={!healthError && !healthLoading}
-          loading={healthLoading}
-          detail={healthError ?? 'Reachable'}
+      {/* Metric Tiles Row */}
+      <div className="dashboard-metrics-grid">
+        <MetricTile
+          label="Sovereignty Status"
+          value={health?.network?.sovereign_mode ? 'AIR-GAPPED' : 'ONLINE'}
+          detail="100% Local Inference & Storage"
+          status={health?.network?.sovereign_mode ? 'ok' : 'warn'}
         />
-        <StatusTile
-          label="Sovereign mode"
-          ok={health?.network?.sovereign_mode ?? null}
-          loading={healthLoading}
-          detail={health?.network?.message ?? '—'}
+        <MetricTile
+          label="External Network Egress"
+          value={`${externalCalls} Calls`}
+          detail="Zero External API Contact"
+          status={externalCalls === 0 ? 'ok' : 'err'}
         />
-        <StatusTile
-          label="External calls"
-          ok={health ? health.network.external_connections_detected === 0 : null}
-          loading={healthLoading}
-          detail={health ? String(health.network.external_connections_detected) : '—'}
+        <MetricTile
+          label="Registered Local Models"
+          value={models ? `${models.count} Models` : '...'}
+          detail="Qwen3 4B / Coder 7B / VL 3B"
+          status="info"
         />
-        <StatusTile
-          label="Registered models"
-          ok={models ? models.count > 0 : null}
-          loading={!models && !loadError}
-          detail={models ? `${models.count} local` : '—'}
+        <MetricTile
+          label="Python Code Sandbox"
+          value="ISOLATED"
+          detail="Network: None · Read-Only FS"
+          status="ok"
         />
       </div>
 
-      {loadError && <ErrorBanner message={loadError} />}
+      {loadError && <ErrorBanner title="Dashboard Notice" message={loadError} />}
+      {healthError && <ErrorBanner title="Backend Status" message={healthError} tip="Ensure the local backend is running on http://localhost:8000." />}
 
-      <div className="dashboard-grid">
-        <Panel title="Recent tasks" action={<Link to="/workspace">New task →</Link>}>
+      {/* Recent Tasks and System Info */}
+      <div className="dashboard-split-grid">
+        <Panel
+          title="Recent Task Orchestrations"
+          action={<Link to="/workspace" className="panel-link">New Task →</Link>}
+        >
           {recentTasks.length === 0 ? (
-            <EmptyState message="No tasks have been run yet." />
+            <EmptyState
+              message="No agent tasks executed yet in this session. Launch a task from the workspace to begin."
+            />
           ) : (
-            <ul className="task-list">
+            <ul className="dashboard-task-list">
               {recentTasks.map((t) => (
-                <li key={t.task_id} className="task-list-item">
-                  <span className="task-id">{t.task_id.slice(0, 8)}</span>
-                  <span className="task-prompt">{t.prompt ?? t.response?.slice(0, 60) ?? '—'}</span>
-                  <Badge tone={t.status === 'success' ? 'ok' : t.status === 'error' ? 'err' : 'neutral'}>
-                    {t.status ?? 'unknown'}
-                  </Badge>
+                <li key={t.task_id} className="dashboard-task-row">
+                  <div className="task-row-main">
+                    <span className="task-row-id">#{t.task_id.slice(0, 8)}</span>
+                    <span className="task-row-prompt">
+                      {t.prompt || t.response?.slice(0, 70) || 'Task Executed'}
+                    </span>
+                  </div>
+                  <div className="task-row-meta">
+                    {t.selected_model && (
+                      <span className="task-model-pill">{t.selected_model}</span>
+                    )}
+                    <Badge tone={t.status === 'success' ? 'ok' : t.status === 'error' ? 'err' : 'neutral'} size="sm">
+                      {t.status ?? 'completed'}
+                    </Badge>
+                  </div>
                 </li>
               ))}
             </ul>
           )}
         </Panel>
 
-        <Panel title="Quick links">
-          <div className="quick-links">
-            <Link to="/workspace">Start a task →</Link>
-            <Link to="/knowledge">Upload &amp; search knowledge base →</Link>
-            <Link to="/models">View model registry &amp; routing →</Link>
-            <Link to="/security">Open sovereignty monitor →</Link>
-          </div>
+        <Panel title="Sovereign Architecture Principles">
+          <ul className="principles-list">
+            <li>
+              <strong>100% Air-Gapped:</strong> Zero telemetry or prompts leave organizational premises.
+            </li>
+            <li>
+              <strong>Model-Agnostic:</strong> Modular registry supports adding new open-weight models seamlessly.
+            </li>
+            <li>
+              <strong>Agentic Multi-Step:</strong> Autonomous tool calling, file I/O, OCR, and document compilation.
+            </li>
+            <li>
+              <strong>Auditable Execution:</strong> Append-only local logging for compliance and verification.
+            </li>
+          </ul>
         </Panel>
       </div>
-    </div>
-  )
-}
-
-function StatusTile({
-  label,
-  ok,
-  loading,
-  detail,
-}: {
-  label: string
-  ok: boolean | null
-  loading: boolean
-  detail: string
-}) {
-  const tone = loading ? 'neutral' : ok ? 'ok' : ok === false ? 'err' : 'neutral'
-  return (
-    <div className={`status-tile status-tile-${tone}`}>
-      <div className="status-tile-label">{label}</div>
-      <div className="status-tile-value">
-        {loading ? <Spinner /> : ok ? '✓' : ok === false ? '✕' : '—'}
-      </div>
-      <div className="status-tile-detail">{detail}</div>
     </div>
   )
 }

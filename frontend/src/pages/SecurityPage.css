@@ -1,100 +1,136 @@
-.sov-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 12px;
-  margin-bottom: 10px;
+.security-page {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
 }
 
-.sov-stat {
-  border: 1px solid var(--border);
+.security-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+.security-desc {
+  max-width: 720px;
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.security-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+}
+
+/* Tool Stats */
+.tool-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.tool-stat-card {
+  background: var(--bg-panel-raised);
+  border: 1px solid var(--border-subtle);
   border-radius: 8px;
   padding: 12px 14px;
-  background: var(--bg-panel-raised);
 }
 
-.sov-stat-label {
-  font-size: 11px;
+.tool-stat-name {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--sovereign-teal);
   text-transform: uppercase;
-  letter-spacing: 0.03em;
-  color: var(--text-dim);
+  letter-spacing: 0.04em;
   margin-bottom: 4px;
 }
 
-.sov-stat-value {
-  font-family: var(--mono);
-  font-size: 16px;
-  font-weight: 700;
+.tool-stat-count {
+  font-size: 13px;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
 }
 
-.sov-ok .sov-stat-value { color: var(--ok); }
-.sov-err .sov-stat-value { color: var(--err); }
-.sov-warn .sov-stat-value { color: var(--warn); }
-
-.sov-message {
-  color: var(--text-dim);
-  font-size: 12.5px;
-  margin: 8px 0;
-}
-
-.sov-caveat {
-  color: var(--text-dim);
-  font-size: 12px;
-  margin: 6px 0 0;
-}
-
-.activity-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-  gap: 10px;
-}
-
-.activity-stat {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 10px 12px;
-  text-align: center;
-}
-
-.activity-stat-value {
-  font-family: var(--mono);
-  font-size: 20px;
-  font-weight: 700;
-  color: var(--accent);
-}
-
-.activity-stat-label {
-  font-size: 11px;
-  color: var(--text-dim);
-  margin-top: 2px;
-}
-
-.audit-log {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  max-height: 320px;
-  overflow-y: auto;
-  font-size: 12.5px;
-}
-
-.audit-log-row {
+.audit-loading {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 6px 2px;
-  border-bottom: 1px solid var(--border);
-  font-family: var(--mono);
-}
-.audit-log-row:last-child {
-  border-bottom: none;
+  padding: 24px;
+  color: var(--text-secondary);
 }
 
-.audit-time {
-  color: var(--text-dim);
-  width: 88px;
-  flex-shrink: 0;
+/* Audit Table */
+.audit-table-wrapper {
+  overflow-x: auto;
+  max-height: 480px;
 }
 
-.audit-task {
-  color: var(--text-dim);
+.audit-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  text-align: left;
+}
+
+.audit-table th {
+  background: var(--bg-panel-raised);
+  color: var(--text-muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 11px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-subtle);
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+
+.audit-table td {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+}
+
+.audit-table tr:hover td {
+  background: var(--bg-panel-hover);
+}
+
+.audit-time-cell {
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.audit-type-tag {
+  font-weight: 600;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.audit-task-code {
+  font-family: var(--font-mono);
+  color: var(--sovereign-teal);
+  background: var(--bg-panel-raised);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.audit-payload-cell {
+  max-width: 400px;
+}
+
+.audit-payload-cell code {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
 }

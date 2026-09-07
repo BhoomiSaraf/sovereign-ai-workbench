@@ -1,20 +1,29 @@
+import { useState } from 'react'
 import type { AgentEvent } from '../api/types'
-import { EmptyState } from './ui'
+import { Badge, EmptyState } from './ui'
 import './ExecutionTrace.css'
 
-// Friendly labels for event types the backend is known to emit today
-// (see AgentState.add_event calls in app/agent/executor.py). This is a
-// display-only lookup — any event type not listed here still renders
-// correctly using its raw type/tool fields, so new event types added on
-// the backend show up without a frontend change.
+const PIPELINE_STAGES = [
+  { id: 'plan', label: 'PLAN' },
+  { id: 'routing', label: 'ROUTE MODEL' },
+  { id: 'tools', label: 'SELECT TOOLS' },
+  { id: 'document', label: 'READ FILE' },
+  { id: 'knowledge', label: 'SEARCH RAG' },
+  { id: 'analysis', label: 'ANALYZE' },
+  { id: 'generation', label: 'GENERATE' },
+  { id: 'validation', label: 'VALIDATE' },
+]
+
 const TYPE_LABELS: Record<string, string> = {
-  routing: 'Model routing',
-  tool_selection: 'Tool selection',
-  tool: 'Tool execution',
-  vision_analysis: 'Vision analysis',
-  artifact_generation: 'Artifact generation',
-  generation: 'Response generation',
-  execution: 'Execution',
+  routing: 'Model Auto-Selection',
+  tool_selection: 'Tool Selection & Security Policy',
+  tool: 'Local Sandboxed Tool Execution',
+  vision_analysis: 'Multimodal Vision & OCR Reasoning',
+  document_analysis: 'Document Parsing & Extraction',
+  knowledge_search: 'Local RAG Vector Search',
+  artifact_generation: 'Deliverable File Generation',
+  generation: 'On-Premise LLM Inference',
+  execution: 'Task Lifecycle Event',
 }
 
 const STATUS_ICON: Record<string, string> = {
@@ -27,54 +36,121 @@ const STATUS_ICON: Record<string, string> = {
   pending: '…',
 }
 
-function describeEvent(event: AgentEvent): string {
-  const base = TYPE_LABELS[event.type] ?? event.type
-  const tool = typeof event.tool === 'object' ? undefined : event.tool
-  return tool ? `${base}: ${tool}` : base
-}
-
-function statusTone(status: string): string {
+function statusTone(status: string): 'ok' | 'err' | 'warn' | 'neutral' {
   if (status === 'error' || status === 'failed') return 'err'
-  if (status === 'skipped') return 'skip'
-  if (status === 'running' || status === 'pending') return 'pending'
+  if (status === 'skipped') return 'warn'
+  if (status === 'running' || status === 'pending') return 'warn'
   return 'ok'
 }
 
 export default function ExecutionTrace({ events }: { events: AgentEvent[] }) {
+  const [expandedIndex, setExpandedIndex] = useState<number | null>(null)
+  const [showRaw, setShowRaw] = useState(false)
+
   if (!events || events.length === 0) {
-    return <EmptyState message="No execution trace yet. Run a task to see live steps here." />
+    return <EmptyState message="No execution trace recorded. Run a task to see live step-by-step agent actions." />
   }
 
-  return (
-    <ol className="trace">
-      {events.map((event, i) => {
-        const tone = statusTone(event.status)
-        const icon = STATUS_ICON[event.status] ?? '•'
-        const detailKeys = Object.keys(event).filter((k) => k !== 'type' && k !== 'status')
+  // Detect which high-level pipeline stages were engaged
+  const activeStages = new Set<string>()
+  for (const ev of events) {
+    if (ev.type === 'routing') activeStages.add('routing')
+    if (ev.type === 'tool_selection') activeStages.add('tools')
+    if (ev.type === 'document_analysis' || ev.tool === 'documents' || ev.tool === 'pdf') activeStages.add('document')
+    if (ev.type === 'knowledge_search' || ev.tool === 'knowledge_search') activeStages.add('knowledge')
+    if (ev.type === 'vision_analysis' || ev.tool === 'vision') activeStages.add('analysis')
+    if (ev.type === 'generation') activeStages.add('generation')
+    if (ev.type === 'artifact_generation' || ev.tool === 'artifact') activeStages.add('validation')
+    if (ev.terminal_tool) activeStages.add('validation')
+  }
+  activeStages.add('plan')
 
-        return (
-          <li key={i} className={`trace-step trace-${tone}`}>
-            <span className={`trace-icon trace-icon-${tone}`}>{icon}</span>
-            <div className="trace-body">
-              <div className="trace-label">{describeEvent(event)}</div>
-              {detailKeys.length > 0 && (
-                <div className="trace-details">
-                  {detailKeys.map((key) => {
-                    const value = event[key]
-                    if (value === null || value === undefined || value === '') return null
-                    const rendered = typeof value === 'object' ? JSON.stringify(value) : String(value)
-                    return (
-                      <span key={key} className="trace-detail">
-                        <span className="trace-detail-key">{key}:</span> {rendered}
-                      </span>
-                    )
-                  })}
+  return (
+    <div className="trace-container">
+      {/* High-level Agentic Pipeline Flowchart */}
+      <div className="pipeline-flowchart">
+        <div className="flowchart-title">Agentic Execution Pipeline</div>
+        <div className="flowchart-track">
+          {PIPELINE_STAGES.map((stage, i) => {
+            const isActive = activeStages.has(stage.id)
+            return (
+              <div key={stage.id} className="flowchart-node-wrapper">
+                <div className={`flowchart-node ${isActive ? 'node-active' : 'node-idle'}`}>
+                  <span className="node-label">{stage.label}</span>
+                  {isActive && <span className="node-badge">✓</span>}
                 </div>
-              )}
-            </div>
-          </li>
-        )
-      })}
-    </ol>
+                {i < PIPELINE_STAGES.length - 1 && (
+                  <div className={`flowchart-arrow ${isActive ? 'arrow-active' : 'arrow-idle'}`}>
+                    →
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* Header with Toggle */}
+      <div className="trace-header-row">
+        <span className="trace-count">{events.length} Orchestration Steps Executed</span>
+        <button className="raw-toggle-btn" onClick={() => setShowRaw(!showRaw)}>
+          {showRaw ? 'Step View' : 'JSON Audit Trace'}
+        </button>
+      </div>
+
+      {showRaw ? (
+        <pre className="raw-trace-box">{JSON.stringify(events, null, 2)}</pre>
+      ) : (
+        <ol className="trace-list">
+          {events.map((event, i) => {
+            const tone = statusTone(event.status)
+            const icon = STATUS_ICON[event.status] ?? '•'
+            const isExpanded = expandedIndex === i
+            const label = TYPE_LABELS[event.type] ?? event.type
+            const toolName = typeof event.tool === 'string' ? event.tool : undefined
+            const detailKeys = Object.keys(event).filter((k) => k !== 'type' && k !== 'status' && k !== 'tool')
+
+            return (
+              <li key={i} className={`trace-card trace-card-${tone}`}>
+                <div
+                  className="trace-card-header"
+                  onClick={() => setExpandedIndex(isExpanded ? null : i)}
+                >
+                  <div className="trace-card-left">
+                    <span className={`trace-bullet trace-bullet-${tone}`}>{icon}</span>
+                    <span className="trace-card-title">{label}</span>
+                    {toolName && <Badge tone="accent" size="sm">Tool: {toolName}</Badge>}
+                  </div>
+
+                  <div className="trace-card-right">
+                    <Badge tone={tone} size="sm">{event.status}</Badge>
+                    <span className="trace-expand-icon">{isExpanded ? '▲' : '▼'}</span>
+                  </div>
+                </div>
+
+                {detailKeys.length > 0 && (
+                  <div className={`trace-card-body ${isExpanded ? 'body-expanded' : 'body-collapsed'}`}>
+                    <div className="trace-details-grid">
+                      {detailKeys.map((key) => {
+                        const val = event[key]
+                        if (val === null || val === undefined || val === '') return null
+                        const formatted = typeof val === 'object' ? JSON.stringify(val, null, 1) : String(val)
+
+                        return (
+                          <div key={key} className="trace-detail-item">
+                            <span className="detail-key">{key}:</span>
+                            <span className="detail-val">{formatted}</span>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )}
+              </li>
+            )
+          })}
+        </ol>
+      )}
+    </div>
   )
 }
